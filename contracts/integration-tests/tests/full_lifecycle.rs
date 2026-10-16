@@ -53,15 +53,21 @@ fn deploy_protocol<'a>(env: &Env) -> Protocol<'a> {
     let token_id = env.register_stellar_asset_contract_v2(token_admin);
     let token = token_id.address();
 
-    // Lending pool: 8% annual interest, 4% fixed senior yield.
+    // Escrow and pool reference each other, so register the escrow first and
+    // initialize it once the pool address exists.
+    let escrow_id = env.register(EscrowContract, ());
+    let escrow = EscrowContractClient::new(env, &escrow_id);
+
+    // Lending pool: 8% annual interest, 4% fixed senior yield, no halving and
+    // no withdrawal lockup.
     let pool_id = env.register(LendingPoolContract, ());
     let pool = LendingPoolContractClient::new(env, &pool_id);
-    pool.initialize(&admin, &token, &800u32, &400u32, &treasury);
+    pool.initialize(
+        &admin, &token, &escrow_id, &800u32, &400u32, &treasury, &0u32, &0u32,
+    );
 
     // Escrow: 30,000 USDC savings target, no lockup so release is purely
     // target-gated.
-    let escrow_id = env.register(EscrowContract, ());
-    let escrow = EscrowContractClient::new(env, &escrow_id);
     escrow.initialize(&EscrowConfig {
         admin: admin.clone(),
         token: token.clone(),
@@ -76,9 +82,14 @@ fn deploy_protocol<'a>(env: &Env) -> Protocol<'a> {
         penalty_bps_tier4: 200,
         grace_period_ledgers: 120_960,
         default_penalty_bps: 1_000,
+        instance_bump_amount: 518_400,
+        instance_lifetime_threshold: 129_600,
+        persistent_bump_amount: 518_400,
+        persistent_lifetime_threshold: 129_600,
         yield_vault: None,
         match_bps: 0,
         match_cap: 0,
+        permissioned_mode: false,
     });
 
     Protocol {
@@ -144,31 +155,51 @@ fn full_borrower_lifecycle_end_to_end() {
     assert_eq!(token.balance(&contractor), 70_000 * USDC);
     assert_eq!(p.pool.get_loan_info(&loan_id).disbursed, 70_000 * USDC);
 
-    // 6. Advance one compound period; debt grows to 70,000 * 1.08 = 75,600.
+    // 6. Advance one compound period. Interest compounds monthly at the
+    //    annual rate / 12, using the pool's fixed-point arithmetic, so the
+    //    debt is 70,000 * (1 + 8% / 12).
     env.ledger()
         .set_sequence_number(env.ledger().sequence() + COMPOUND_PERIOD);
+    const INTEREST_SCALE: i128 = 1_000_000_000;
+    const PERIODS_PER_YEAR: i128 = 12;
+    let period_factor = INTEREST_SCALE + (800 * INTEREST_SCALE) / (10_000 * PERIODS_PER_YEAR);
+    let owed = 70_000 * USDC * period_factor / INTEREST_SCALE;
 
-    // 7. Borrower repays principal plus 8% interest in full.
-    p.pool.repay(&borrower, &loan_id, &(75_600 * USDC));
+    // 7. Borrower repays principal plus one month of interest in full.
+    p.pool.repay(&borrower, &loan_id, &owed);
 
     // 8. Final assertions: loan repaid, balances reconcile.
     let loan = p.pool.get_loan_info(&loan_id);
     assert_eq!(loan.status, LoanStatus::Repaid);
-    assert_eq!(loan.repaid, 75_600 * USDC);
+    assert_eq!(loan.repaid, owed);
     assert_eq!(loan.outstanding_debt, 0);
 
+    // Paying off a 12-month loan in the first month is an early prepayment, so
+    // the pool additionally collects its 1% standard prepayment penalty on the
+    // repaid amount and forwards it straight to the treasury. The penalty
+    // never becomes pool liquidity — it arrives and leaves in the same
+    // transaction.
+    let prepay_penalty = owed * 100 / 10_000;
+    assert_eq!(p.pool.get_total_prepayment_penalties(), prepay_penalty);
+
     // Contractor keeps the full 70,000. Construction fund holds the 30,000
-    // down-payment. Borrower spent 30,000 (savings) + 75,600 (repayment).
+    // down-payment. Borrower spent 30,000 (savings) + the repayment + the
+    // early-prepayment penalty.
     assert_eq!(token.balance(&contractor), 70_000 * USDC);
     assert_eq!(token.balance(&construction_fund), 30_000 * USDC);
-    assert_eq!(token.balance(&borrower), 4_400 * USDC);
+    assert_eq!(
+        token.balance(&borrower),
+        110_000 * USDC - 30_000 * USDC - owed - prepay_penalty
+    );
 
-    // Pool liquidity: 70,000 in, 70,000 out, 75,600 repaid back.
-    assert_eq!(p.pool.get_liquidity(), 75_600 * USDC);
-    assert_eq!(token.balance(&p.pool.address), 75_600 * USDC);
+    // Pool liquidity: 70,000 in, 70,000 out, `owed` repaid back. The penalty
+    // is excluded — it was forwarded to the treasury before this accounting.
+    assert_eq!(p.pool.get_liquidity(), owed);
+    assert_eq!(token.balance(&p.pool.address), owed);
 
-    // Treasury untouched (no withdrawals occurred).
-    assert_eq!(token.balance(&p.treasury), 0);
+    // The only treasury movement is the early-prepayment penalty; no
+    // withdrawals occurred.
+    assert_eq!(token.balance(&p.treasury), prepay_penalty);
 }
 
 #[test]
@@ -188,11 +219,8 @@ fn loan_request_before_escrow_target_met_fails() {
     // Only 10,000 saved against a 30,000 target.
     p.escrow.deposit(&borrower, &goal, &(10_000 * USDC));
 
-    // The escrow-to-pool bridge must reject the loan request until the target
-    // is reached.
-    let result =
-        p.escrow
-            .try_release_and_request_loan(&borrower, &goal, &p.pool.address, &recipient);
+    // Release must be rejected until the savings target is reached.
+    let result = p.escrow.try_release(&borrower, &goal, &recipient);
     assert_eq!(result.unwrap_err(), Ok(EscrowError::TargetNotReached));
 }
 
@@ -254,9 +282,11 @@ fn over_repayment_fails() {
 #[test]
 fn unauthenticated_escrow_deposit_reverts() {
     let env = Env::default();
-    // Do NOT mock_all_auths to test strict require_auth enforcement.
-
+    // Setup needs the admin's auth (`initialize` requires it); clear all
+    // authorizations afterwards so the call under test runs with none.
+    env.mock_all_auths();
     let p = deploy_protocol(&env);
+    env.set_auths(&[]);
     let borrower = Address::generate(&env);
     let goal = Symbol::new(&env, "home_2026");
 
@@ -267,9 +297,11 @@ fn unauthenticated_escrow_deposit_reverts() {
 #[test]
 fn unauthenticated_escrow_withdraw_reverts() {
     let env = Env::default();
-    // Do NOT mock_all_auths to test strict require_auth enforcement.
-
+    // Setup needs the admin's auth (`initialize` requires it); clear all
+    // authorizations afterwards so the call under test runs with none.
+    env.mock_all_auths();
     let p = deploy_protocol(&env);
+    env.set_auths(&[]);
     let borrower = Address::generate(&env);
     let goal = Symbol::new(&env, "home_2026");
 
@@ -280,22 +312,28 @@ fn unauthenticated_escrow_withdraw_reverts() {
 #[test]
 fn unauthenticated_lending_pool_request_loan_reverts() {
     let env = Env::default();
-    // Do NOT mock_all_auths to test strict require_auth enforcement.
-
+    // Setup needs the admin's auth (`initialize` requires it); clear all
+    // authorizations afterwards so the call under test runs with none.
+    env.mock_all_auths();
     let p = deploy_protocol(&env);
+    env.set_auths(&[]);
     let borrower = Address::generate(&env);
     let loan_id = BytesN::from_array(&env, &[9u8; 32]);
 
-    let result = p.pool.try_request_loan(&borrower, &loan_id, &(70_000 * USDC));
+    let result = p
+        .pool
+        .try_request_loan(&borrower, &loan_id, &(70_000 * USDC));
     assert!(result.is_err());
 }
 
 #[test]
 fn unauthenticated_lending_pool_repay_reverts() {
     let env = Env::default();
-    // Do NOT mock_all_auths to test strict require_auth enforcement.
-
+    // Setup needs the admin's auth (`initialize` requires it); clear all
+    // authorizations afterwards so the call under test runs with none.
+    env.mock_all_auths();
     let p = deploy_protocol(&env);
+    env.set_auths(&[]);
     let borrower = Address::generate(&env);
     let loan_id = BytesN::from_array(&env, &[9u8; 32]);
 

@@ -4,13 +4,12 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env,
-    Map, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env, Map,
+    Vec,
 };
 
 const INSTANCE_BUMP_AMOUNT: u32 = 518_400; // ~30 days
 const INSTANCE_LIFETIME_THRESHOLD: u32 = 129_600; // ~7.5 days
-const BPS_SCALE: u32 = 10_000;
 
 /// Errors returned by the staking pool.
 #[contracterror]
@@ -115,9 +114,7 @@ impl StakingPoolContract {
     }
 
     fn set_total_shares(env: &Env, amount: i128) {
-        env.storage()
-            .instance()
-            .set(&DataKey::TotalShares, &amount);
+        env.storage().instance().set(&DataKey::TotalShares, &amount);
     }
 
     fn read_shares(env: &Env, staker: &Address) -> i128 {
@@ -141,9 +138,10 @@ impl StakingPoolContract {
     }
 
     fn write_stake_balance(env: &Env, staker: &Address, token: &Address, amount: i128) {
-        env.storage()
-            .persistent()
-            .set(&DataKey::StakeBalance(staker.clone(), token.clone()), &amount);
+        env.storage().persistent().set(
+            &DataKey::StakeBalance(staker.clone(), token.clone()),
+            &amount,
+        );
     }
 
     fn bump_instance(env: &Env) {
@@ -245,7 +243,12 @@ impl StakingPoolContract {
 
     /// Stake `amount` of `token` into the pool. Mints shares proportional to
     /// the current exchange rate and records the deposit for yield distribution.
-    pub fn stake(env: Env, staker: Address, token: Address, amount: i128) -> Result<i128, StakingError> {
+    pub fn stake(
+        env: Env,
+        staker: Address,
+        token: Address,
+        amount: i128,
+    ) -> Result<i128, StakingError> {
         staker.require_auth();
 
         if amount <= 0 {
@@ -270,7 +273,8 @@ impl StakingPoolContract {
         // Update pool-level totals.
         Self::set_total_shares(&env, total_shares + minted);
         info.total_deposited += amount;
-        info.exchange_rate = Self::compute_exchange_rate(total_shares + minted, info.total_deposited);
+        info.exchange_rate =
+            Self::compute_exchange_rate(total_shares + minted, info.total_deposited);
         Self::write_token_info(&env, &token, &info);
 
         // Update staker balances.
@@ -282,10 +286,8 @@ impl StakingPoolContract {
 
         Self::bump_instance(&env);
 
-        env.events().publish(
-            (symbol_short!("stake"),),
-            (staker, token, amount, minted),
-        );
+        env.events()
+            .publish((symbol_short!("stake"),), (staker, token, amount, minted));
 
         Ok(minted)
     }
@@ -335,7 +337,8 @@ impl StakingPoolContract {
             let mut info = tokens.get(token_key.clone()).unwrap();
             info.total_deposited = info.total_deposited.saturating_sub(withdraw_amount);
             if info.total_deposited > 0 {
-                info.exchange_rate = Self::compute_exchange_rate(total_shares - shares, info.total_deposited);
+                info.exchange_rate =
+                    Self::compute_exchange_rate(total_shares - shares, info.total_deposited);
             } else {
                 info.exchange_rate = 1_000_000_000;
             }
@@ -343,11 +346,7 @@ impl StakingPoolContract {
 
             // Transfer tokens back to staker.
             let token_client = token::Client::new(&env, &token_key);
-            token_client.transfer(
-                &env.current_contract_address(),
-                &staker,
-                &withdraw_amount,
-            );
+            token_client.transfer(&env.current_contract_address(), &staker, &withdraw_amount);
 
             total_withdrawn += withdraw_amount;
         }
@@ -435,10 +434,8 @@ impl StakingPoolContract {
 
         Self::bump_instance(&env);
 
-        env.events().publish(
-            (symbol_short!("rewards"),),
-            (total_reward, total_deposits),
-        );
+        env.events()
+            .publish((symbol_short!("rewards"),), (total_reward, total_deposits));
 
         Ok(())
     }
@@ -479,11 +476,7 @@ impl StakingPoolContract {
 
             // Transfer claimed reward tokens to the staker.
             let token_client = token::Client::new(&env, &key);
-            token_client.transfer(
-                &env.current_contract_address(),
-                &staker,
-                &claim,
-            );
+            token_client.transfer(&env.current_contract_address(), &staker, &claim);
 
             total_claim += claim;
         }
@@ -492,10 +485,8 @@ impl StakingPoolContract {
             Self::bump_instance(&env);
         }
 
-        env.events().publish(
-            (symbol_short!("claim_rew"),),
-            (staker, total_claim),
-        );
+        env.events()
+            .publish((symbol_short!("claim_rew"),), (staker, total_claim));
 
         Ok(total_claim)
     }
@@ -574,10 +565,17 @@ mod test {
     extern crate std;
 
     use super::*;
-    use soroban_sdk::testutils::{Address as _, Ledger};
-    use soroban_sdk::{token::StellarAssetClient, Env, IntoVal, Vec};
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::{token::StellarAssetClient, Env};
 
-    fn setup(env: &Env) -> (Address, Address, Address, StakingPoolContractClient<'static>) {
+    fn setup(
+        env: &Env,
+    ) -> (
+        Address,
+        Address,
+        Address,
+        StakingPoolContractClient<'static>,
+    ) {
         let admin = Address::generate(env);
         let contract_id = env.register(StakingPoolContract, ());
         let client = StakingPoolContractClient::new(env, &contract_id);
@@ -620,7 +618,7 @@ mod test {
     fn test_add_token() {
         let env = Env::default();
         env.mock_all_auths();
-        let (admin, token_a, _token_b, client) = setup(&env);
+        let (_admin, token_a, _token_b, client) = setup(&env);
 
         client.add_token(&token_a, &500u32);
         let info = client.get_token_info(&token_a).unwrap();
@@ -639,7 +637,7 @@ mod test {
         let staker = Address::generate(&env);
         mint_to(&env, &token_a, &staker, 100_000_0000i128);
 
-        let minted = client.stake(&staker, &token_a, &50_000_0000i128).unwrap();
+        let minted = client.stake(&staker, &token_a, &50_000_0000i128);
         assert!(minted > 0);
 
         let shares = client.get_shares(&staker);
@@ -664,8 +662,8 @@ mod test {
         mint_to(&env, &token_a, &staker, 100_000_0000i128);
         mint_to(&env, &token_b, &staker, 100_000_0000i128);
 
-        let minted_a = client.stake(&staker, &token_a, &30_000_0000i128).unwrap();
-        let minted_b = client.stake(&staker, &token_b, &20_000_0000i128).unwrap();
+        let minted_a = client.stake(&staker, &token_a, &30_000_0000i128);
+        let minted_b = client.stake(&staker, &token_b, &20_000_0000i128);
 
         // Each token pool has its own deposit tracking.
         let bal_a = client.get_stake_balance(&staker, &token_a);
@@ -690,13 +688,13 @@ mod test {
         mint_to(&env, &token_a, &staker, 100_000_0000i128);
         mint_to(&env, &token_b, &staker, 100_000_0000i128);
 
-        let _minted_a = client.stake(&staker, &token_a, &50_000_0000i128).unwrap();
-        let _minted_b = client.stake(&staker, &token_b, &30_000_0000i128).unwrap();
+        let _minted_a = client.stake(&staker, &token_a, &50_000_0000i128);
+        let _minted_b = client.stake(&staker, &token_b, &30_000_0000i128);
 
         // Unstake half the shares.
         let total_shares = client.get_shares(&staker);
         let half = total_shares / 2;
-        let withdrawn = client.unstake(&staker, &half).unwrap();
+        let withdrawn = client.unstake(&staker, &half);
 
         // Should receive proportional tokens from each pool.
         assert!(withdrawn > 0);
@@ -720,11 +718,11 @@ mod test {
         mint_to(&env, &token_a, &staker, 100_000_0000i128);
         mint_to(&env, &token_b, &staker, 100_000_0000i128);
 
-        client.stake(&staker, &token_a, &40_000_0000i128).unwrap();
-        client.stake(&staker, &token_b, &20_000_0000i128).unwrap();
+        client.stake(&staker, &token_a, &40_000_0000i128);
+        client.stake(&staker, &token_b, &20_000_0000i128);
 
         let total_shares = client.get_shares(&staker);
-        let withdrawn = client.unstake(&staker, &total_shares).unwrap();
+        let withdrawn = client.unstake(&staker, &total_shares);
 
         assert!(withdrawn >= 60_000_0000i128 - 1); // allow small rounding
         assert_eq!(client.get_shares(&staker), 0);
@@ -747,8 +745,8 @@ mod test {
         mint_to(&env, &token_b, &staker_b, 100_000_0000i128);
 
         // Each staker only deposits one token.
-        client.stake(&staker_a, &token_a, &50_000_0000i128).unwrap();
-        client.stake(&staker_b, &token_b, &30_000_0000i128).unwrap();
+        client.stake(&staker_a, &token_a, &50_000_0000i128);
+        client.stake(&staker_b, &token_b, &30_000_0000i128);
 
         // Staker A has no balance in token B.
         assert_eq!(client.get_stake_balance(&staker_a, &token_b), 0);
@@ -757,7 +755,7 @@ mod test {
 
         // Unstaking works independently.
         let shares_a = client.get_shares(&staker_a);
-        let withdrawn_a = client.unstake(&staker_a, &shares_a).unwrap();
+        let withdrawn_a = client.unstake(&staker_a, &shares_a);
         // When staker A unstakes fully, they should receive back their token_a deposit
         // (all of it, since staker B's deposit of token_b doesn't affect A's token_a balance).
         // The proportional math: A has 100% of shares attributed to token_a pool.
@@ -779,8 +777,8 @@ mod test {
         mint_to(&env, &token_b, &staker, 100_000_0000i128);
 
         // Stake 60_000 token A and 40_000 token B
-        client.stake(&staker, &token_a, &60_000_0000i128).unwrap();
-        client.stake(&staker, &token_b, &40_000_0000i128).unwrap();
+        client.stake(&staker, &token_a, &60_000_0000i128);
+        client.stake(&staker, &token_b, &40_000_0000i128);
 
         // Admin distributes 10_000 reward tokens (using token_a as reward denomination).
         // But rewards distribute proportionally: token_a pool gets 60%, token_b gets 40%.
@@ -790,7 +788,7 @@ mod test {
         let reward_amount = 10_000_0000i128;
         mint_to(&env, &token_a, &admin, reward_amount);
 
-        client.distribute_rewards(&admin, &token_a, &reward_amount).unwrap();
+        client.distribute_rewards(&admin, &token_a, &reward_amount);
 
         // Token A pool should have accumulated ~60% of the reward.
         let info_a = client.get_token_info(&token_a).unwrap();
@@ -815,19 +813,19 @@ mod test {
         mint_to(&env, &token_a, &staker, 100_000_0000i128);
         mint_to(&env, &token_b, &staker, 100_000_0000i128);
 
-        client.stake(&staker, &token_a, &50_000_0000i128).unwrap();
-        client.stake(&staker, &token_b, &50_000_0000i128).unwrap();
+        client.stake(&staker, &token_a, &50_000_0000i128);
+        client.stake(&staker, &token_b, &50_000_0000i128);
 
         // Distribute 20_000 reward in token A.
         let reward_amount = 20_000_0000i128;
         mint_to(&env, &token_a, &admin, reward_amount);
-        client.distribute_rewards(&admin, &token_a, &reward_amount).unwrap();
+        client.distribute_rewards(&admin, &token_a, &reward_amount);
 
-        let total_accumulated = client.get_accumulated_rewards(&token_a)
-            + client.get_accumulated_rewards(&token_b);
+        let total_accumulated =
+            client.get_accumulated_rewards(&token_a) + client.get_accumulated_rewards(&token_b);
 
         // Single staker should claim all accumulated rewards.
-        let claimed = client.claim_rewards(&staker).unwrap();
+        let claimed = client.claim_rewards(&staker);
         assert!(claimed > 0);
         // After claiming, accumulated rewards should be zero.
         assert_eq!(client.get_accumulated_rewards(&token_a), 0);
@@ -852,18 +850,18 @@ mod test {
 
         // Staker1 deposits 60_000 token A + 0 token B
         // Staker2 deposits 20_000 token A + 20_000 token B
-        client.stake(&staker1, &token_a, &60_000_0000i128).unwrap();
-        client.stake(&staker2, &token_a, &20_000_0000i128).unwrap();
-        client.stake(&staker2, &token_b, &20_000_0000i128).unwrap();
+        client.stake(&staker1, &token_a, &60_000_0000i128);
+        client.stake(&staker2, &token_a, &20_000_0000i128);
+        client.stake(&staker2, &token_b, &20_000_0000i128);
 
         // Total deposits: token A = 80_000, token B = 20_000 → total = 100_000
         let reward_amount = 50_000_0000i128;
         mint_to(&env, &token_a, &admin, reward_amount);
-        client.distribute_rewards(&admin, &token_a, &reward_amount).unwrap();
+        client.distribute_rewards(&admin, &token_a, &reward_amount);
 
         // Claim rewards for each staker.
-        let claimed1 = client.claim_rewards(&staker1).unwrap();
-        let claimed2 = client.claim_rewards(&staker2).unwrap();
+        let claimed1 = client.claim_rewards(&staker1);
+        let claimed2 = client.claim_rewards(&staker2);
 
         // Staker1 owns 60_000 / 100_000 = 60% of total deposits → ~60% of rewards
         // Staker2 owns 40_000 / 100_000 = 40% → ~40%
@@ -931,14 +929,14 @@ mod test {
         mint_to(&env, &token_b, &s2, 100_000_0000i128);
 
         // Both stake the same amounts.
-        client.stake(&s1, &token_a, &40_000_0000i128).unwrap();
-        client.stake(&s1, &token_b, &10_000_0000i128).unwrap();
-        client.stake(&s2, &token_a, &20_000_0000i128).unwrap();
-        client.stake(&s2, &token_b, &30_000_0000i128).unwrap();
+        client.stake(&s1, &token_a, &40_000_0000i128);
+        client.stake(&s1, &token_b, &10_000_0000i128);
+        client.stake(&s2, &token_a, &20_000_0000i128);
+        client.stake(&s2, &token_b, &30_000_0000i128);
 
         // S1 unstakes fully.
         let s1_shares = client.get_shares(&s1);
-        client.unstake(&s1, &s1_shares).unwrap();
+        client.unstake(&s1, &s1_shares);
 
         // S1 should have zero in both pools.
         assert_eq!(client.get_stake_balance(&s1, &token_a), 0);
@@ -952,7 +950,7 @@ mod test {
 
         // S2 can still unstake.
         let s2_shares = client.get_shares(&s2);
-        client.unstake(&s2, &s2_shares).unwrap();
+        client.unstake(&s2, &s2_shares);
         assert_eq!(client.get_stake_balance(&s2, &token_a), 0);
         assert_eq!(client.get_stake_balance(&s2, &token_b), 0);
     }
@@ -969,13 +967,13 @@ mod test {
         mint_to(&env, &token_a, &staker, 100_000_0000i128);
         mint_to(&env, &token_b, &staker, 100_000_0000i128);
 
-        client.stake(&staker, &token_a, &80_000_0000i128).unwrap();
-        client.stake(&staker, &token_b, &20_000_0000i128).unwrap();
+        client.stake(&staker, &token_a, &80_000_0000i128);
+        client.stake(&staker, &token_b, &20_000_0000i128);
 
         // Unstake 25% of shares.
         let total = client.get_shares(&staker);
         let quarter = total / 4;
-        client.unstake(&staker, &quarter).unwrap();
+        client.unstake(&staker, &quarter);
 
         // The remaining balance ratios should be roughly preserved.
         let rem_a = client.get_stake_balance(&staker, &token_a);
@@ -1012,8 +1010,8 @@ mod test {
         mint_to(&env, &token_b, &staker, 100_000_0000i128);
 
         // Stake exactly 75_000 in token A, 25_000 in token B.
-        client.stake(&staker, &token_a, &75_000_0000i128).unwrap();
-        client.stake(&staker, &token_b, &25_000_0000i128).unwrap();
+        client.stake(&staker, &token_a, &75_000_0000i128);
+        client.stake(&staker, &token_b, &25_000_0000i128);
 
         // Preview the waterfall for a reward of 12_000.
         let waterfall = client.preview_yield_waterfall(&12_000_0000i128);
@@ -1049,8 +1047,8 @@ mod test {
         mint_to(&env, &token_b, &staker, 100_000_0000i128);
 
         // Stake 10_000 in token A, 90_000 in token B.
-        client.stake(&staker, &token_a, &10_000_0000i128).unwrap();
-        client.stake(&staker, &token_b, &90_000_0000i128).unwrap();
+        client.stake(&staker, &token_a, &10_000_0000i128);
+        client.stake(&staker, &token_b, &90_000_0000i128);
 
         let waterfall = client.preview_yield_waterfall(&100_000_0000i128);
         assert_eq!(waterfall.len(), 2);
@@ -1080,7 +1078,7 @@ mod test {
 
         let staker = Address::generate(&env);
         mint_to(&env, &token_a, &staker, 100_000_0000i128);
-        client.stake(&staker, &token_a, &50_000_0000i128).unwrap();
+        client.stake(&staker, &token_a, &50_000_0000i128);
 
         // Single pool should get 100% of rewards.
         let waterfall = client.preview_yield_waterfall(&10_000_0000i128);
@@ -1112,7 +1110,7 @@ mod test {
 
         let staker = Address::generate(&env);
         mint_to(&env, &token_a, &staker, 100_000_0000i128);
-        client.stake(&staker, &token_a, &50_000_0000i128).unwrap();
+        client.stake(&staker, &token_a, &50_000_0000i128);
 
         // Zero reward — waterfall should return empty.
         let waterfall = client.preview_yield_waterfall(&0i128);
@@ -1140,7 +1138,7 @@ mod test {
 
         let staker = Address::generate(&env);
         mint_to(&env, &token_a, &staker, 100_000_0000i128);
-        client.stake(&staker, &token_a, &10_000_0000i128).unwrap();
+        client.stake(&staker, &token_a, &10_000_0000i128);
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             client.remove_token(&token_a);
@@ -1163,8 +1161,8 @@ mod test {
         // Uneven deposits (1 : 2) maximize remainders for totals not divisible by 3.
         mint_to(&env, &token_a, &staker, 1_000_000_0000i128);
         mint_to(&env, &token_b, &staker, 1_000_000_0000i128);
-        client.stake(&staker, &token_a, &100_0000i128).unwrap();
-        client.stake(&staker, &token_b, &200_0000i128).unwrap();
+        client.stake(&staker, &token_a, &100_0000i128);
+        client.stake(&staker, &token_b, &200_0000i128);
 
         let mut swept_total: i128 = 0;
         let mut distributed_total: i128 = 0;
@@ -1174,7 +1172,7 @@ mod test {
             mint_to(&env, &token_a, &admin, total);
             let before_a = client.get_accumulated_rewards(&token_a);
             let before_b = client.get_accumulated_rewards(&token_b);
-            client.distribute_rewards(&admin, &token_a, &total).unwrap();
+            client.distribute_rewards(&admin, &token_a, &total);
             let after_a = client.get_accumulated_rewards(&token_a);
             let after_b = client.get_accumulated_rewards(&token_b);
             let credited = (after_a - before_a) + (after_b - before_b);

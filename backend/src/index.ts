@@ -29,11 +29,13 @@ import { milestoneRouter } from "./routes/milestone.js";
 import { analyticsRouter } from "./routes/analytics.js";
 import { auditRouter } from "./routes/audit.js";
 import { kycRouter } from "./routes/kyc.js";
+import { watchlistRouter } from "./routes/watchlist.js";
 import { notificationsRouter } from "./routes/notifications.js";
 import { didRouter } from "./routes/did.js";
 import { adminRouter } from "./routes/admin.js";
 import { queueDashboardRouter } from "./routes/queueDashboard.js";
 import { adminAuthRouter } from "./routes/adminAuth.js";
+import { impersonationRouter } from "./routes/impersonation.js";
 import { workspaceRouter } from "./routes/workspace.js";
 import { userRouter } from "./routes/user.js";
 import { metricsRouter } from "./routes/metrics.js";
@@ -53,6 +55,7 @@ import {
   feeWaiverAdminRouter,
   feeWaiverBorrowerRouter,
 } from "./routes/feeWaiver.js";
+import { rateSheetAdminRouter } from "./routes/rateSheet.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { requestLogger } from "./middleware/requestLogger.js";
 import { logMasker } from "./middleware/logMasker.js";
@@ -70,21 +73,36 @@ import {
   mutationRateLimiter,
 } from "./middleware/rateLimit.js";
 import { issueCsrfToken, csrfProtection, CSRF_COOKIE } from "./middleware/csrf.js";
+import { adminIpAllowlist, resolveTrustProxy } from "./middleware/adminIpAllowlist.js";
+import { notFoundHandler } from "./middleware/notFound.js";
 import { startEventListener } from "./services/eventListener.js";
 import { startNotificationScheduler } from "./services/notification.js";
 import { startScheduler } from "./jobs/scheduler.js";
+import {
+  startIpfsOrphanCleanupScheduler,
+  stopIpfsOrphanCleanupScheduler,
+} from "./jobs/ipfsOrphanCleanup.js";
 import { startBackupScheduler, startBackupCleanupScheduler } from "./jobs/backupScheduler.js";
 import { startWebhookKeyRotationScheduler } from "./jobs/webhookKeyRotation.js";
+import { startWebhookAutoDisableScheduler, stopWebhookAutoDisableScheduler } from "./jobs/webhookAutoDisable.js";
 import { startSecretsRotationScheduler } from "./jobs/secretsRotation.js";
 import { startJwtKeyRotationScheduler } from "./jobs/jwtKeyRotation.js";
 import { startRpcHealthMonitor } from "./services/rpcHealthMonitor.js";
 import { loadConfig } from "./config.js";
 import { getOcrProvider, setOcrProvider } from "./services/ocrService.js";
 import {
+  HttpAddressVerificationProvider,
+  setAddressVerificationProvider,
+} from "./services/addressVerificationProvider.js";
+import {
   FailoverKycProvider,
   HttpKycProvider,
   sendKycFailoverAlert,
 } from "./services/kycProviderFailover.js";
+import {
+  HttpPayrollVerificationProvider,
+  setPayrollVerificationProvider,
+} from "./services/payrollVerificationProvider.js";
 import logger from "./utils/logger.js";
 import { feeEstimator } from "./services/feeEstimator.js";
 import { initializeRedis } from "./services/redis.js";
@@ -118,6 +136,19 @@ if (config.kycBackupProviderUrl) {
         onAlert: sendKycFailoverAlert,
       }
     )
+  );
+}
+
+// Automated employment verification (issue #802). Disabled unless a provider
+// URL is configured — the Null provider stays active otherwise, so every
+// applicant falls back to manual document review.
+if (config.payrollVerificationApiUrl) {
+  setPayrollVerificationProvider(
+    new HttpPayrollVerificationProvider({
+      url: config.payrollVerificationApiUrl,
+      apiKey: config.payrollVerificationApiKey,
+      providerName: "payroll_provider",
+    })
   );
 }
 
@@ -246,17 +277,25 @@ app.use("/api/loan/import", mutationRateLimiter, authMiddleware, loanImportRoute
 app.use("/api/milestone", mutationRateLimiter, milestoneRouter);
 app.use("/api/analytics", analyticsRouter);
 app.use("/api/did", sensitiveRateLimiter, didRouter);
-app.use("/api/audit-logs", auditRouter);
 // kycRouter applies its own per-route auth (borrower wallet auth on upload,
 // operator API key on token issuance/decryption), so it is mounted bare.
 app.use("/api/kyc", kycRouter);
+app.use("/api/watchlist", authMiddleware, watchlistRouter);
 app.use("/api/notifications", notificationsRouter);
 app.use("/api/referral", referralRouter);
 app.use("/api/tenant", tenantRouter);
 app.use("/api/admin", authMiddleware, adminRouter);
 app.use("/api/admin", authMiddleware, feeWaiverAdminRouter);
 app.use("/api/admin/queues", authMiddleware, queueDashboardRouter);
+app.use("/api/admin", authMiddleware, rateSheetAdminRouter);
 app.use("/api/admin", adminAuthRouter);
+// Bare (no outer authMiddleware): impersonation/start and /end authenticate
+// via the admin's own token through requireAdmin regardless of whether an
+// impersonation cookie is also present, and /status reads only the
+// impersonation cookie itself — routing all three through authMiddleware
+// first would let its read-only enforcement block the very request that
+// ends an active impersonation session.
+app.use("/api/admin", impersonationRouter);
 app.use("/api/admin/api-keys", apiKeysRouter);
 app.use("/api/exports", exportsRouter);
 app.use("/api/webhooks/pagerduty", incidentWebhookRouter);
@@ -267,6 +306,10 @@ app.use("/api/waitlist", waitlistRouter);
 app.use("/api/auth", credentialStuffingGuard, authRouter);
 // Swagger UI — excluded from rate limits so developers can inspect freely
 app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+
+// Unmatched routes — and, by design, admin requests blocked by the IP
+// allowlist — resolve to one identical 404 body. Must precede errorHandler.
+app.use(notFoundHandler);
 
 // Global error handler (must be after routes)
 Sentry.setupExpressErrorHandler(app);
@@ -290,6 +333,8 @@ app.listen(PORT, () => {
   startBackupScheduler();
   startBackupCleanupScheduler();
   startWebhookKeyRotationScheduler();
+  startIpfsOrphanCleanupScheduler();
+  startWebhookAutoDisableScheduler();
   startSecretsRotationScheduler();
   startJwtKeyRotationScheduler();
   // Proactively monitor Soroban RPC node health and alert operators on
@@ -301,6 +346,7 @@ app.listen(PORT, () => {
 // ── Graceful Shutdown ─────────────────────────────────────────────────
 async function shutdown(signal: string) {
   logger.info(`[shutdown] received ${signal}, shutting down gracefully`);
+  stopIpfsOrphanCleanupScheduler();
   await Promise.allSettled([
     stopNotificationWorker(),
     stopWebhookWorker(),
@@ -308,6 +354,7 @@ async function shutdown(signal: string) {
     queueService.close(),
     closeCluster(),
   ]);
+  stopWebhookAutoDisableScheduler();
   logger.info("[shutdown] complete");
   process.exit(0);
 }

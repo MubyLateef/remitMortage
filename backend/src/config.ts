@@ -3,6 +3,9 @@
 
 /** Environment configuration with validation. */
 
+import fs from "fs";
+import path from "path";
+
 export type StellarNetwork = "testnet" | "mainnet" | "futurenet" | "standalone";
 
 const NETWORK_PASSPHRASE_DEFAULTS: Record<StellarNetwork, string> = {
@@ -130,6 +133,14 @@ export interface Config {
   assignmentQueueEnabled: boolean;
   /** Duration (ms) above which a database operation is captured as a slow query (issue #583). */
   slowQueryThresholdMs: number;
+  /**
+   * Payroll/income verification provider endpoint (issue #802). Null leaves
+   * the Null provider active — every employer is reported not covered and
+   * applicants fall back to manual document review.
+   */
+  payrollVerificationApiUrl: string | null;
+  /** Bearer token sent to the payroll verification provider. */
+  payrollVerificationApiKey: string | null;
   /** Backup KYC provider endpoint. Null leaves failover disabled. */
   kycBackupProviderUrl: string | null;
   /** Bearer token sent to the backup KYC provider. */
@@ -142,6 +153,16 @@ export interface Config {
   kycFailoverCooldownMs: number;
   /** Alert again when failover is still active after this long (ms). */
   kycFailoverAlertAfterMs: number;
+  /**
+   * Postal address verification/standardization provider endpoint (issue
+   * #791). Null leaves the Null provider active — every submitted address
+   * is then saved as-is and flagged UNVERIFIED for manual review.
+   */
+  addressVerificationApiUrl: string | null;
+  /** Bearer token sent to the address verification provider. */
+  addressVerificationApiKey: string | null;
+  /** Per-call timeout (ms) for the address verification provider. */
+  addressVerificationTimeoutMs: number;
   /** HMAC key for applicant tax ID hashes used in duplicate detection. */
   taxIdHashSecret: string;
   /** Webhook delivery p95 latency (ms) above which an endpoint is flagged (issue #619). */
@@ -150,6 +171,14 @@ export interface Config {
   webhookLatencyWindowMinutes: number;
   /** Raw white-label tenant records from TENANT_BRANDING (validated in services/tenant.ts). */
   tenantBranding: unknown[];
+  /** Whether the usage analytics pipeline records events (ANALYTICS_ENABLED !== "false"). */
+  analyticsEnabled: boolean;
+  /** Consecutive fully-failed dispatch cycles before a webhook subscription is auto-paused. */
+  webhookAutoDisableFailureThreshold: number;
+  /** How long (ms) a subscription must be failing continuously before it is auto-paused. */
+  webhookAutoDisableStaleAfterMs: number;
+  /** Optional email notified when a webhook subscription is auto-paused. */
+  webhookAutoDisableNotifyEmail: string | null;
 }
 
 /** Parses APPLICATION_SLA_HOURS (a JSON map of status -> SLA hours). */
@@ -211,6 +240,31 @@ function parseAlertRecipients(raw: string | undefined): Record<string, string> {
   return {};
 }
 
+/**
+ * Reads the documented CORS origins for the current environment from
+ * config/allowed-origins.json (issue #682). This file is the single source
+ * of truth checked by scripts/detect-cors-drift.sh in CI; ALLOWED_ORIGINS
+ * still overrides it when explicitly set, e.g. for local overrides.
+ */
+function loadDocumentedAllowedOrigins(env: string): string[] {
+  try {
+    const resolvedPath = fs.existsSync(path.resolve(process.cwd(), "config/allowed-origins.json"))
+      ? path.resolve(process.cwd(), "config/allowed-origins.json")
+      : path.resolve(process.cwd(), "backend/config/allowed-origins.json");
+
+    if (fs.existsSync(resolvedPath)) {
+      const parsed = JSON.parse(fs.readFileSync(resolvedPath, "utf8"));
+      const origins = parsed?.[env];
+      if (Array.isArray(origins) && origins.every((o) => typeof o === "string")) {
+        return origins;
+      }
+    }
+  } catch {
+    // malformed or missing file falls back to the hardcoded development default
+  }
+  return ["http://localhost:3000", "http://localhost:4000"];
+}
+
 export function loadConfig(): Config {
   return {
     port: parseInt(process.env.PORT || "4000", 10),
@@ -251,7 +305,7 @@ export function loadConfig(): Config {
     webhookRotationNotifyEmail: process.env.WEBHOOK_ROTATION_NOTIFY_EMAIL || "",
     allowedOrigins: process.env.ALLOWED_ORIGINS
       ? process.env.ALLOWED_ORIGINS.split(",").map((origin) => origin.trim())
-      : ["http://localhost:3000", "http://localhost:4000"],
+      : loadDocumentedAllowedOrigins(process.env.NODE_ENV || "development"),
     adminApiKey: process.env.ADMIN_API_KEY || "default_admin_api_key",
     fourEyesApproverAddresses: String(process.env.FOUR_EYES_APPROVER_ADDRESSES || "")
       .split(",")
@@ -317,15 +371,40 @@ export function loadConfig(): Config {
     // Default on: the assignment queue is additive and best-effort.
     assignmentQueueEnabled: process.env.ASSIGNMENT_QUEUE_ENABLED !== "false",
     slowQueryThresholdMs: parseInt(process.env.SLOW_QUERY_THRESHOLD_MS || "200", 10),
+    payrollVerificationApiUrl: process.env.PAYROLL_VERIFICATION_API_URL || null,
+    payrollVerificationApiKey: process.env.PAYROLL_VERIFICATION_API_KEY || null,
     kycBackupProviderUrl: process.env.KYC_BACKUP_PROVIDER_URL || null,
     kycBackupProviderApiKey: process.env.KYC_BACKUP_PROVIDER_API_KEY || null,
     kycFailoverThreshold: parseInt(process.env.KYC_FAILOVER_THRESHOLD || "3", 10),
     kycProviderTimeoutMs: parseInt(process.env.KYC_PROVIDER_TIMEOUT_MS || "10000", 10),
     kycFailoverCooldownMs: parseInt(process.env.KYC_FAILOVER_COOLDOWN_MS || "60000", 10),
     kycFailoverAlertAfterMs: parseInt(process.env.KYC_FAILOVER_ALERT_AFTER_MS || "900000", 10),
+    addressVerificationApiUrl: process.env.ADDRESS_VERIFICATION_API_URL || null,
+    addressVerificationApiKey: process.env.ADDRESS_VERIFICATION_API_KEY || null,
+    addressVerificationTimeoutMs: parseInt(process.env.ADDRESS_VERIFICATION_TIMEOUT_MS || "10000", 10),
     taxIdHashSecret: process.env.TAX_ID_HASH_SECRET || "default_tax_id_hash_secret",
     webhookLatencySlaMs: parseInt(process.env.WEBHOOK_LATENCY_SLA_MS || "5000", 10),
     webhookLatencyWindowMinutes: parseInt(process.env.WEBHOOK_LATENCY_WINDOW_MINUTES || "60", 10),
     tenantBranding: parseTenantBranding(process.env.TENANT_BRANDING),
+    complianceAlertEmail:
+      process.env.COMPLIANCE_ALERT_EMAIL ||
+      process.env.OPS_FALLBACK_ALERT_EMAIL ||
+      process.env.ALERT_DEFAULT_RECIPIENT ||
+      "compliance@remitmortgage.com",
+    complianceSlackWebhookUrl:
+      process.env.COMPLIANCE_SLACK_WEBHOOK_URL ||
+      process.env.OPS_SLACK_WEBHOOK_URL ||
+      process.env.SLACK_WEBHOOK_URL ||
+      null,
+    analyticsEnabled: process.env.ANALYTICS_ENABLED !== "false",
+    webhookAutoDisableFailureThreshold: parseInt(
+      process.env.WEBHOOK_AUTO_DISABLE_FAILURE_THRESHOLD || "20",
+      10
+    ),
+    webhookAutoDisableStaleAfterMs: parseInt(
+      process.env.WEBHOOK_AUTO_DISABLE_STALE_AFTER_MS || "259200000",
+      10
+    ),
+    webhookAutoDisableNotifyEmail: process.env.WEBHOOK_AUTO_DISABLE_NOTIFY_EMAIL || null,
   };
 }

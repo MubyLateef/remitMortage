@@ -63,4 +63,12 @@ pub enum MilestoneError {
     InvalidPartialAmount = 27,
     /// Partial release amount exceeds the milestone's remaining unreleased amount.
     ExceedsRemainingAmount = 28,
+    /// Milestone cannot be rejected in its current status (only Proposed).
+    CannotReject = 29,
+    /// Milestone cannot be resubmitted in its current status (only Rejected).
+    CannotResubmit = 30,
+    /// Performance bonus basis points must be within 0..=10000.
+    InvalidBonusConfig = 31,
+    /// A milestone deadline must be a future ledger sequence.
+    InvalidDeadline = 32,
 }

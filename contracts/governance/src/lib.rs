@@ -46,7 +46,13 @@ pub struct GovernanceContract;
 #[contractimpl]
 impl GovernanceContract {
     /// Initializes the governance wrapper with an admin, a guardian, a list of signers, and a quorum threshold.
-    pub fn initialize(env: Env, admin: Address, guardian: Address, signers: Vec<Address>, quorum_bps: u32) {
+    pub fn initialize(
+        env: Env,
+        admin: Address,
+        guardian: Address,
+        signers: Vec<Address>,
+        quorum_bps: u32,
+    ) {
         if env.storage().instance().has(&DataKey::Config) {
             panic!("Already initialized");
         }
@@ -65,11 +71,18 @@ impl GovernanceContract {
         };
 
         env.storage().instance().set(&DataKey::Config, &config);
-        env.storage().instance().set(&DataKey::LastProposalId, &0u32);
+        env.storage()
+            .instance()
+            .set(&DataKey::LastProposalId, &0u32);
     }
 
     /// Submits a new milestone approval proposal referencing an IPFS evidence hash.
-    pub fn submit_proposal(env: Env, proposer: Address, milestone_id: u32, evidence_hash: Bytes) -> u32 {
+    pub fn submit_proposal(
+        env: Env,
+        proposer: Address,
+        milestone_id: u32,
+        evidence_hash: Bytes,
+    ) -> u32 {
         proposer.require_auth();
 
         let config = Self::get_config(env.clone());
@@ -95,8 +108,12 @@ impl GovernanceContract {
             status: ProposalStatus::Open,
         };
 
-        env.storage().instance().set(&DataKey::Proposal(new_id), &proposal);
-        env.storage().instance().set(&DataKey::LastProposalId, &new_id);
+        env.storage()
+            .instance()
+            .set(&DataKey::Proposal(new_id), &proposal);
+        env.storage()
+            .instance()
+            .set(&DataKey::LastProposalId, &new_id);
 
         new_id
     }
@@ -136,14 +153,16 @@ impl GovernanceContract {
 
         // 6. Calculate required votes for quorum (using ceiling calculation)
         let signers_len = config.signers.len();
-        let required_votes = (signers_len * config.quorum_bps + 9999) / 10000;
+        let required_votes = (signers_len * config.quorum_bps).div_ceil(10000);
 
         if proposal.vote_count >= required_votes {
             proposal.status = ProposalStatus::Passed;
         }
 
         // Save updated proposal
-        env.storage().instance().set(&DataKey::Proposal(proposal_id), &proposal);
+        env.storage()
+            .instance()
+            .set(&DataKey::Proposal(proposal_id), &proposal);
     }
 
     /// Executes an approved proposal. Callable only by regular governance signers.
@@ -166,7 +185,9 @@ impl GovernanceContract {
         }
 
         proposal.status = ProposalStatus::Executed;
-        env.storage().instance().set(&DataKey::Proposal(proposal_id), &proposal);
+        env.storage()
+            .instance()
+            .set(&DataKey::Proposal(proposal_id), &proposal);
     }
 
     /// Guardian-only: cancels an open proposal before it can be executed.
@@ -189,7 +210,9 @@ impl GovernanceContract {
         }
 
         proposal.status = ProposalStatus::Rejected;
-        env.storage().instance().set(&DataKey::Proposal(proposal_id), &proposal);
+        env.storage()
+            .instance()
+            .set(&DataKey::Proposal(proposal_id), &proposal);
     }
 
     /// View function returning whether the proposal has been approved (Passed).
@@ -244,7 +267,9 @@ impl GovernanceContract {
 
     /// View function to retrieve a proposal's details.
     pub fn get_proposal(env: Env, proposal_id: u32) -> Option<Proposal> {
-        env.storage().instance().get(&DataKey::Proposal(proposal_id))
+        env.storage()
+            .instance()
+            .get(&DataKey::Proposal(proposal_id))
     }
 }
 

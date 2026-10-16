@@ -57,7 +57,7 @@ impl OraclePriceContract {
         let window_ledgers = Self::configured_window(env);
         if window_ledgers == 0 {
             let mut latest_only = Vec::new(env);
-            if observations.len() > 0 {
+            if !observations.is_empty() {
                 latest_only.push_back(observations.get_unchecked(observations.len() - 1));
             }
             return latest_only;
@@ -177,20 +177,20 @@ impl OraclePriceContract {
         let last_price_opt: Option<PriceData> = env.storage().instance().get(&DataKey::Price);
 
         if let (Some(conf), Some(last_price)) = (config_opt, last_price_opt) {
-            if current_ledger <= last_price.updated_ledger + conf.window_ledgers {
-                if last_price.price > 0 {
-                    let diff = if new_price > last_price.price {
-                        new_price - last_price.price
-                    } else {
-                        last_price.price - new_price
-                    };
+            if current_ledger <= last_price.updated_ledger + conf.window_ledgers
+                && last_price.price > 0
+            {
+                let diff = if new_price > last_price.price {
+                    new_price - last_price.price
+                } else {
+                    last_price.price - new_price
+                };
 
-                    let deviation_bps = (diff * 10000) / last_price.price;
+                let deviation_bps = (diff * 10000) / last_price.price;
 
-                    if deviation_bps > conf.max_deviation_bps as i128 {
-                        env.storage().instance().set(&DataKey::HaltFlag, &true);
-                        return; // Halt without updating the price
-                    }
+                if deviation_bps > conf.max_deviation_bps as i128 {
+                    env.storage().instance().set(&DataKey::HaltFlag, &true);
+                    return; // Halt without updating the price
                 }
             }
         }

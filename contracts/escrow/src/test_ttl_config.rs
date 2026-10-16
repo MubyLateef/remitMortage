@@ -247,7 +247,9 @@ fn exhausted_matching_reserve_does_not_revert_deposit() {
     config.match_cap = 100;
     client.initialize(&config);
     env.as_contract(&client.address, || {
-        env.storage().instance().set(&DataKey::MatchingReserve, &0i128);
+        env.storage()
+            .instance()
+            .set(&DataKey::MatchingReserve, &0i128);
     });
 
     let goal = Symbol::new(&env, "empty");

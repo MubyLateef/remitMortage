@@ -7,8 +7,8 @@ use super::*;
 use crate::errors::MilestoneError;
 use crate::types::{MilestoneRecord, MilestoneStatus};
 use soroban_sdk::testutils::Address as _;
-use soroban_sdk::token::StellarAssetClient;
 use soroban_sdk::testutils::Ledger;
+use soroban_sdk::token::StellarAssetClient;
 use soroban_sdk::{token, Address, Bytes, BytesN, Env, Vec};
 
 /// Minimal mock of the lending pool exposing the same `disburse` ABI the
@@ -79,11 +79,7 @@ mod mockpool {
             Ok(())
         }
 
-        pub fn refnd_ms(
-            env: Env,
-            _loan_id: BytesN<32>,
-            amount: i128,
-        ) -> Result<(), MockPoolError> {
+        pub fn refnd_ms(env: Env, _loan_id: BytesN<32>, amount: i128) -> Result<(), MockPoolError> {
             // Only the configured admin (the milestone contract) may refund.
             let admin: Address = env.storage().instance().get(&MKey::Admin).unwrap();
             admin.require_auth();
@@ -103,7 +99,7 @@ mod mockpool {
             env.storage().instance().get(&MKey::Refunded).unwrap_or(0)
         }
 
-            pub fn set_loan_borrower(env: Env, loan_id: BytesN<32>, borrower: Address) {
+        pub fn set_loan_borrower(env: Env, loan_id: BytesN<32>, borrower: Address) {
             env.storage()
                 .instance()
                 .set(&MKey::LoanBorrower(loan_id), &borrower);
@@ -752,7 +748,8 @@ fn test_cannot_dispute_proposed_milestone() {
     );
 
     // Cannot dispute a milestone that is still Proposed
-    let res = h.milestone
+    let res = h
+        .milestone
         .try_dispute_milestone(&h.approvers.get(0).unwrap(), &pid);
     assert_eq!(res, Err(Ok(MilestoneError::CannotDispute)));
 }
@@ -787,7 +784,8 @@ fn test_cannot_dispute_already_refunded_milestone() {
     assert_eq!(record.status, MilestoneStatus::Refunded);
 
     // Second dispute fails
-    let res = h.milestone
+    let res = h
+        .milestone
         .try_dispute_milestone(&h.approvers.get(1).unwrap(), &pid);
     assert_eq!(res, Err(Ok(MilestoneError::AlreadyDisputed)));
 }
@@ -816,8 +814,7 @@ fn test_dispute_requires_governance_approval() {
 
     // Non-approver cannot dispute
     let unauthorized = Address::generate(&env);
-    let res = h.milestone
-        .try_dispute_milestone(&unauthorized, &pid);
+    let res = h.milestone.try_dispute_milestone(&unauthorized, &pid);
     assert_eq!(res, Err(Ok(MilestoneError::Unauthorized)));
 }
 
@@ -941,9 +938,7 @@ fn test_vote_budget_change_by_non_approver_fails() {
         .propose_milestone_budget_change(&ms_id, &pid, &2_000i128);
 
     let outsider = Address::generate(&env);
-    let res = h
-        .milestone
-        .try_vote_budget_change(&outsider, &ms_id);
+    let res = h.milestone.try_vote_budget_change(&outsider, &ms_id);
     assert_eq!(res, Err(Ok(MilestoneError::Unauthorized)));
 }
 
@@ -982,11 +977,9 @@ fn test_propose_budget_change_unknown_milestone_fails() {
 
     let unknown_id = BytesN::from_array(&env, &[0x99u8; 32]);
     let ms_id = milestone_symbol(&env);
-    let res = h.milestone.try_propose_milestone_budget_change(
-        &ms_id,
-        &unknown_id,
-        &2_000i128,
-    );
+    let res = h
+        .milestone
+        .try_propose_milestone_budget_change(&ms_id, &unknown_id, &2_000i128);
     assert_eq!(res, Err(Ok(MilestoneError::MilestoneNotFound)));
 }
 
@@ -1007,11 +1000,9 @@ fn test_propose_budget_change_zero_amount_fails() {
     );
 
     let ms_id = milestone_symbol(&env);
-    let res = h.milestone.try_propose_milestone_budget_change(
-        &ms_id,
-        &pid,
-        &0i128,
-    );
+    let res = h
+        .milestone
+        .try_propose_milestone_budget_change(&ms_id, &pid, &0i128);
     assert_eq!(res, Err(Ok(MilestoneError::InvalidAmount)));
 }
 
@@ -1035,11 +1026,9 @@ fn test_propose_budget_change_duplicate_fails() {
     h.milestone
         .propose_milestone_budget_change(&ms_id, &pid, &2_000i128);
 
-    let res = h.milestone.try_propose_milestone_budget_change(
-        &ms_id,
-        &pid,
-        &3_000i128,
-    );
+    let res = h
+        .milestone
+        .try_propose_milestone_budget_change(&ms_id, &pid, &3_000i128);
     assert_eq!(res, Err(Ok(MilestoneError::MilestoneExists)));
 }
 
@@ -1066,11 +1055,9 @@ fn test_propose_budget_change_on_approved_milestone_fails() {
         .approve_milestone(&h.approvers.get(1).unwrap(), &pid);
 
     let ms_id = milestone_symbol(&env);
-    let res = h.milestone.try_propose_milestone_budget_change(
-        &ms_id,
-        &pid,
-        &2_000i128,
-    );
+    let res = h
+        .milestone
+        .try_propose_milestone_budget_change(&ms_id, &pid, &2_000i128);
     assert_eq!(res, Err(Ok(MilestoneError::InvalidStatus)));
 }
 
@@ -1207,10 +1194,7 @@ fn test_release_milestone_blocked_when_reentrant_flag_set() {
 
 /// Submit approvals with rotated starting signers and assert the milestone
 /// always ends Approved with exactly `threshold` votes and a single disbursement.
-fn assert_all_approval_permutations_reach_consistent_quorum(
-    approver_count: u32,
-    threshold: u32,
-) {
+fn assert_all_approval_permutations_reach_consistent_quorum(approver_count: u32, threshold: u32) {
     for start in 0..approver_count {
         let env = Env::default();
         env.mock_all_auths();
@@ -1276,7 +1260,9 @@ fn test_simultaneous_threshold_vote_does_not_overcount() {
     assert_eq!(record.status, MilestoneStatus::Approved);
 
     // A third overlapping approval must not inflate the tally.
-    let res = h.milestone.try_approve_milestone(&h.approvers.get(2).unwrap(), &pid);
+    let res = h
+        .milestone
+        .try_approve_milestone(&h.approvers.get(2).unwrap(), &pid);
     assert_eq!(res, Err(Ok(MilestoneError::InvalidStatus)));
 
     let unchanged = h.milestone.get_milestone(&pid);
@@ -1314,7 +1300,9 @@ fn test_interleaved_approve_sequences_from_different_signers() {
     assert_eq!(record.status, MilestoneStatus::Approved);
 
     // Signer 1's late vote is rejected — no double-count.
-    let res = h.milestone.try_approve_milestone(&h.approvers.get(1).unwrap(), &pid);
+    let res = h
+        .milestone
+        .try_approve_milestone(&h.approvers.get(1).unwrap(), &pid);
     assert_eq!(res, Err(Ok(MilestoneError::InvalidStatus)));
 }
 

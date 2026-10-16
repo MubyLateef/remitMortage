@@ -40,7 +40,7 @@
 //! If an adapter needs the caller to hold a wrapped-asset balance (or any other
 //! preconditions), grant them in `setup`; the suite calls `mock_all_auths`.
 
-use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env, Symbol};
+use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env};
 
 use crate::{BridgeAdapter, BridgeError, BridgeState};
 

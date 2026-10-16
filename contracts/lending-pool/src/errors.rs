@@ -7,6 +7,9 @@ use soroban_sdk::contracterror;
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum PoolError {
+    // Soroban caps a contract error enum at 50 variants. Discriminants 11, 15,
+    // 18, 19 and 27-31 belonged to variants nothing returned and are retired;
+    // don't reuse them.
     /// Contract has already been initialized.
     AlreadyInitialized = 1,
     /// Contract has not been initialized yet.
@@ -27,25 +30,16 @@ pub enum PoolError {
     InsufficientLiquidity = 9,
     /// Repayment exceeds remaining loan balance.
     OverPayment = 10,
-    /// Loan has not met the criteria for default.
-    NotEligibleForDefault = 11,
     /// Loan has already defaulted.
     AlreadyDefaulted = 12,
     /// Operation rejected because the contract is paused.
     ContractPaused = 13,
     /// Proposed new admin is not the caller or no transfer is pending.
     NotPendingAdmin = 14,
-    /// No pending upgrade exists to execute.
-    UpgradeNotPending = 15,
     /// Upgrade was proposed but the timelock delay has not elapsed yet.
     UpgradeTimelockActive = 16,
     /// Investor cannot change tranche after the initial deposit.
     TrancheMismatch = 17,
-    /// Junior tranche has insufficient capital to absorb this loss.
-    InsufficientJuniorCapital = 18,
-    /// Borrower has no valid, non-expired verification record in the
-    /// configured VerificationRegistry, so the loan request is rejected.
-    ApplicantNotVerified = 19,
     /// The daily borrow limit has been exceeded.
     DailyBorrowLimitExceeded = 20,
     /// Refund amount exceeds the amount disbursed for the loan.
@@ -60,16 +54,6 @@ pub enum PoolError {
     RefinanceNotEligible = 25,
     /// Loan is not yet overdue, so it cannot be marked as defaulted.
     LoanNotOverdue = 26,
-    /// Oracle data is stale or unavailable.
-    OracleUnavailable = 27,
-    /// Oracle price is zero or invalid.
-    OraclePriceInvalid = 28,
-    /// Requested loan exceeds the configured maximum LTV.
-    LtvExceeded = 29,
-    /// Referral relationships cannot contain cycles.
-    ReferralCycleDetected = 30,
-    /// Referral relationship already exists.
-    ReferralAlreadySet = 31,
     /// Loan maturity rebate has already been claimed.
     RebateAlreadyClaimed = 32,
     /// Loan has missed payments, so is ineligible for the maturity rebate.
@@ -113,6 +97,22 @@ pub enum PoolError {
     PayoffQuoteExpired = 52,
     /// Payoff quotes are disabled (window is zero) or the window is invalid.
     InvalidQuoteWindow = 53,
+    /// Deposit attempted before the configured per-investor cooldown has elapsed.
+    DepositCooldownActive = 54,
+    /// Refinance execution attempted after the rate-lock window has expired.
+    /// The borrower must call `request_refinance` again to obtain a fresh quote.
+    RefinanceRateLockExpired = 55,
+    /// No pending rate-lock exists for this loan; `request_refinance` must be
+    /// called before `execute_refinance`.
+    RefinanceRateLockNotFound = 56,
+    /// Emergency liquidity injection requires an InsurancePool to be configured.
+    InsurancePoolNotSet = 57,
+    /// Emergency liquidity injection requires a GovernanceContract to be configured.
+    GovernanceContractNotSet = 58,
+    /// The referenced governance proposal has not reached `Passed` status.
+    GovernanceProposalNotPassed = 59,
+    /// Injection amount exceeds the configured percentage cap of insurance reserves.
+    EmergencyInjectionCapExceeded = 60,
 }
 
 #[contracterror]

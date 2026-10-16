@@ -7,7 +7,9 @@ mod errors;
 mod types;
 
 use crate::errors::RegistryError;
-use crate::types::{DataKey, DecayConfig, RateConfig, RiskRecord, RiskTier, VerificationRecord};
+use crate::types::{
+    AppealRecord, DataKey, DecayConfig, RateConfig, RiskRecord, RiskTier, VerificationRecord,
+};
 use soroban_sdk::{contract, contractimpl, symbol_short, Address, BytesN, Env};
 
 const INSTANCE_BUMP_AMOUNT: u32 = 518_400; // ~30 days
@@ -166,8 +168,8 @@ impl VerificationRegistryContract {
         }
 
         let overdue = (elapsed - config.threshold_ledgers) as u64;
-        let points = overdue.saturating_mul(config.points_per_period as u64)
-            / config.period_ledgers as u64;
+        let points =
+            overdue.saturating_mul(config.points_per_period as u64) / config.period_ledgers as u64;
 
         points.min(100u64) as u32
     }
@@ -190,6 +192,46 @@ impl VerificationRegistryContract {
 
     fn read_lending_pool(env: &Env) -> Option<Address> {
         env.storage().instance().get(&DataKey::LendingPool)
+    }
+
+    fn read_reviewer(env: &Env) -> Result<Address, RegistryError> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Reviewer)
+            .ok_or(RegistryError::ReviewerNotConfigured)
+    }
+
+    fn appeal_key(borrower: &Address) -> DataKey {
+        DataKey::Appeal(borrower.clone())
+    }
+
+    fn read_appeal(env: &Env, borrower: &Address) -> Option<AppealRecord> {
+        let key = Self::appeal_key(borrower);
+        let record: Option<AppealRecord> = env.storage().persistent().get(&key);
+        if record.is_some() {
+            env.storage().persistent().extend_ttl(
+                &key,
+                PERSISTENT_LIFETIME_THRESHOLD,
+                PERSISTENT_BUMP_AMOUNT,
+            );
+        }
+        record
+    }
+
+    fn set_appeal(env: &Env, borrower: &Address, record: &AppealRecord) {
+        let key = Self::appeal_key(borrower);
+        env.storage().persistent().set(&key, record);
+        env.storage().persistent().extend_ttl(
+            &key,
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+    }
+
+    fn remove_appeal(env: &Env, borrower: &Address) {
+        env.storage()
+            .persistent()
+            .remove(&Self::appeal_key(borrower));
     }
 
     fn read_rate_cap(env: &Env) -> u32 {
@@ -226,10 +268,7 @@ impl VerificationRegistryContract {
         env.storage().instance().set(&DataKey::Admin, &admin);
         Self::bump_instance(&env);
 
-        env.events().publish(
-            (symbol_short!("init"),),
-            (admin,),
-        );
+        env.events().publish((symbol_short!("init"),), (admin,));
 
         Ok(())
     }
@@ -280,7 +319,13 @@ impl VerificationRegistryContract {
 
         env.events().publish(
             (symbol_short!("vreg"),),
-            (admin, borrower, score, verified_ledger, record.expiration_ledger),
+            (
+                admin,
+                borrower,
+                score,
+                verified_ledger,
+                record.expiration_ledger,
+            ),
         );
 
         Ok(())
@@ -310,7 +355,8 @@ impl VerificationRegistryContract {
     /// stops re-verifying gradually loses their favourable rate rather than
     /// holding it on the strength of a stale report.
     pub fn get_score(env: Env, borrower: Address) -> Result<u32, RegistryError> {
-        let record = Self::read_record(&env, &borrower).ok_or(RegistryError::VerificationNotFound)?;
+        let record =
+            Self::read_record(&env, &borrower).ok_or(RegistryError::VerificationNotFound)?;
         if env.ledger().sequence() > record.expiration_ledger {
             return Err(RegistryError::VerificationNotFound);
         }
@@ -322,7 +368,8 @@ impl VerificationRegistryContract {
     /// Useful for audits and for showing a borrower what re-verifying would
     /// restore them to.
     pub fn get_raw_score(env: Env, borrower: Address) -> Result<u32, RegistryError> {
-        let record = Self::read_record(&env, &borrower).ok_or(RegistryError::VerificationNotFound)?;
+        let record =
+            Self::read_record(&env, &borrower).ok_or(RegistryError::VerificationNotFound)?;
         if env.ledger().sequence() > record.expiration_ledger {
             return Err(RegistryError::VerificationNotFound);
         }
@@ -391,7 +438,12 @@ impl VerificationRegistryContract {
 
         env.events().publish(
             (symbol_short!("decaycfg"),),
-            (threshold_ledgers, points_per_period, period_ledgers, min_score),
+            (
+                threshold_ledgers,
+                points_per_period,
+                period_ledgers,
+                min_score,
+            ),
         );
 
         Ok(())
@@ -419,10 +471,8 @@ impl VerificationRegistryContract {
             .set(&DataKey::ProposedAdmin, &new_admin);
         Self::bump_instance(&env);
 
-        env.events().publish(
-            (symbol_short!("prop_adm"),),
-            (admin, new_admin),
-        );
+        env.events()
+            .publish((symbol_short!("prop_adm"),), (admin, new_admin));
 
         Ok(())
     }
@@ -445,10 +495,8 @@ impl VerificationRegistryContract {
         env.storage().instance().remove(&DataKey::ProposedAdmin);
         Self::bump_instance(&env);
 
-        env.events().publish(
-            (symbol_short!("acc_adm"),),
-            (proposed,),
-        );
+        env.events()
+            .publish((symbol_short!("acc_adm"),), (proposed,));
 
         Ok(())
     }
@@ -491,7 +539,13 @@ impl VerificationRegistryContract {
 
         env.events().publish(
             (symbol_short!("rate_cfg"),),
-            (admin, rate_excellent_bps, rate_good_bps, rate_fair_bps, rate_fallback_bps),
+            (
+                admin,
+                rate_excellent_bps,
+                rate_good_bps,
+                rate_fair_bps,
+                rate_fallback_bps,
+            ),
         );
 
         Ok(())
@@ -507,10 +561,10 @@ impl VerificationRegistryContract {
             .instance()
             .get(&DataKey::RateConfig)
             .unwrap_or(RateConfig {
-                rate_excellent_bps: 400,  // 4% APR
-                rate_good_bps: 600,        // 6% APR
-                rate_fair_bps: 800,        // 8% APR
-                rate_fallback_bps: 1200,   // 12% APR
+                rate_excellent_bps: 400, // 4% APR
+                rate_good_bps: 600,      // 6% APR
+                rate_fair_bps: 800,      // 8% APR
+                rate_fallback_bps: 1200, // 12% APR
             })
     }
 
@@ -520,11 +574,7 @@ impl VerificationRegistryContract {
     /// must be in the range 0–10000 bps. These limits are enforced in
     /// `set_rate_config` and `get_borrower_rate` so that no computed rate
     /// exceeds the configured boundaries.
-    pub fn set_rate_limits(
-        env: Env,
-        cap_bps: u32,
-        floor_bps: u32,
-    ) -> Result<(), RegistryError> {
+    pub fn set_rate_limits(env: Env, cap_bps: u32, floor_bps: u32) -> Result<(), RegistryError> {
         let admin = Self::read_admin(&env)?;
         admin.require_auth();
 
@@ -537,7 +587,9 @@ impl VerificationRegistryContract {
         }
 
         env.storage().instance().set(&DataKey::RateCap, &cap_bps);
-        env.storage().instance().set(&DataKey::RateFloor, &floor_bps);
+        env.storage()
+            .instance()
+            .set(&DataKey::RateFloor, &floor_bps);
         Self::bump_instance(&env);
 
         Ok(())
@@ -600,13 +652,28 @@ impl VerificationRegistryContract {
         let admin = Self::read_admin(&env)?;
         admin.require_auth();
 
-        env.storage().instance().set(&DataKey::LendingPool, &lending_pool);
+        env.storage()
+            .instance()
+            .set(&DataKey::LendingPool, &lending_pool);
         Self::bump_instance(&env);
 
-        env.events().publish(
-            (symbol_short!("set_lp"),),
-            (admin, lending_pool),
-        );
+        env.events()
+            .publish((symbol_short!("set_lp"),), (admin, lending_pool));
+
+        Ok(())
+    }
+
+    /// Configure the reviewer authorized to resolve borrower score appeals.
+    /// Admin-only. Overwrites any previously configured reviewer.
+    pub fn set_reviewer(env: Env, reviewer: Address) -> Result<(), RegistryError> {
+        let admin = Self::read_admin(&env)?;
+        admin.require_auth();
+
+        env.storage().instance().set(&DataKey::Reviewer, &reviewer);
+        Self::bump_instance(&env);
+
+        env.events()
+            .publish((symbol_short!("set_rev"),), (admin, reviewer));
 
         Ok(())
     }
@@ -618,6 +685,9 @@ impl VerificationRegistryContract {
         borrower: Address,
         was_on_time: bool,
     ) -> Result<RiskRecord, RegistryError> {
+        let lending_pool = Self::read_lending_pool(&env).ok_or(RegistryError::UnauthorizedPool)?;
+        lending_pool.require_auth();
+
         let mut profile = Self::read_risk_record(&env, &borrower)
             .unwrap_or_else(|| Self::seed_risk_from_score(70));
 
@@ -651,6 +721,85 @@ impl VerificationRegistryContract {
     /// Return the dynamic risk profile, if one exists.
     pub fn get_risk_profile(env: Env, borrower: Address) -> Option<RiskRecord> {
         Self::read_risk_record(&env, &borrower)
+    }
+
+    /// File an appeal contesting the caller's currently anchored score.
+    ///
+    /// Borrower-only (the caller must be the borrower being appealed for —
+    /// nobody can file on another borrower's behalf). Requires an active,
+    /// non-expired verification to appeal, and a borrower may have at most
+    /// one open appeal at a time: filing again while one is already pending
+    /// returns [RegistryError::AppealAlreadyOpen] instead of queuing a
+    /// second request, so a rejected or slow reviewer can't be spammed.
+    pub fn appeal_score(env: Env, borrower: Address) -> Result<(), RegistryError> {
+        borrower.require_auth();
+
+        let record =
+            Self::read_record(&env, &borrower).ok_or(RegistryError::VerificationNotFound)?;
+        if env.ledger().sequence() > record.expiration_ledger {
+            return Err(RegistryError::VerificationNotFound);
+        }
+
+        if Self::read_appeal(&env, &borrower).is_some() {
+            return Err(RegistryError::AppealAlreadyOpen);
+        }
+
+        let requested_ledger = env.ledger().sequence();
+        let appeal = AppealRecord {
+            borrower: borrower.clone(),
+            score_at_appeal: record.score,
+            requested_ledger,
+        };
+        Self::set_appeal(&env, &borrower, &appeal);
+        Self::bump_instance(&env);
+
+        env.events().publish(
+            (symbol_short!("appeal"),),
+            (borrower, record.score, requested_ledger),
+        );
+
+        Ok(())
+    }
+
+    /// Resolve a borrower's open score appeal, setting a corrected score.
+    ///
+    /// Callable only by the configured reviewer (see [Self::set_reviewer]) —
+    /// never the borrower themselves, and never the admin unless the admin
+    /// has also been configured as the reviewer. Resolving requires an open
+    /// appeal to exist and clears it, so the borrower is free to file
+    /// another one later if a future score is again disputed.
+    pub fn resolve_appeal(
+        env: Env,
+        borrower: Address,
+        new_score: u32,
+    ) -> Result<(), RegistryError> {
+        let reviewer = Self::read_reviewer(&env)?;
+        reviewer.require_auth();
+
+        if new_score > 100 {
+            return Err(RegistryError::InvalidScore);
+        }
+
+        let appeal = Self::read_appeal(&env, &borrower).ok_or(RegistryError::NoOpenAppeal)?;
+
+        let mut record =
+            Self::read_record(&env, &borrower).ok_or(RegistryError::VerificationNotFound)?;
+        record.score = new_score;
+        Self::set_record(&env, &borrower, &record);
+        Self::remove_appeal(&env, &borrower);
+        Self::bump_instance(&env);
+
+        env.events().publish(
+            (symbol_short!("apl_res"),),
+            (reviewer, borrower, appeal.score_at_appeal, new_score),
+        );
+
+        Ok(())
+    }
+
+    /// Fetch a borrower's open score appeal, if one exists.
+    pub fn get_appeal(env: Env, borrower: Address) -> Option<AppealRecord> {
+        Self::read_appeal(&env, &borrower)
     }
 }
 
@@ -719,14 +868,17 @@ mod test {
         let events = env.events().all();
         let last_event = events.last().unwrap();
 
-        let expected_topic: soroban_sdk::Vec<soroban_sdk::Val> = soroban_sdk::vec![
-            &env,
-            symbol_short!("vreg").into_val(&env),
-        ];
+        let expected_topic: soroban_sdk::Vec<soroban_sdk::Val> =
+            soroban_sdk::vec![&env, symbol_short!("vreg").into_val(&env),];
         assert_eq!(last_event.1, expected_topic);
 
-        let (event_admin, event_borrower, event_score, event_ledger, event_expiry): (Address, Address, u32, u32, u32) =
-            last_event.2.into_val(&env);
+        let (event_admin, event_borrower, event_score, event_ledger, event_expiry): (
+            Address,
+            Address,
+            u32,
+            u32,
+            u32,
+        ) = last_event.2.into_val(&env);
         assert_eq!(event_admin, admin);
         assert_eq!(event_borrower, borrower);
         assert_eq!(event_score, 80u32);
@@ -1203,18 +1355,18 @@ mod test {
 
         let borrower = Address::generate(&env);
         let report_hash = BytesN::from_array(&env, &[13u8; 32]);
+        let lending_pool = Address::generate(&env);
 
         client.register_verification(&borrower, &report_hash, &1_000u32, &70u32);
+        client.set_lending_pool(&lending_pool);
 
         client.record_repayment_status(&borrower, &true);
 
         let events = env.events().all();
         let last_event = events.last().unwrap();
 
-        let expected_topic: soroban_sdk::Vec<soroban_sdk::Val> = soroban_sdk::vec![
-            &env,
-            symbol_short!("risk_upd").into_val(&env),
-        ];
+        let expected_topic: soroban_sdk::Vec<soroban_sdk::Val> =
+            soroban_sdk::vec![&env, symbol_short!("risk_upd").into_val(&env),];
         assert_eq!(last_event.1, expected_topic);
 
         let (event_borrower, old_score, new_score, was_on_time): (Address, u32, u32, bool) =
@@ -1491,7 +1643,12 @@ mod test {
         extend_decay_ttls(&env);
         let (_admin, client) = setup(&env);
 
-        client.set_decay_config(&(10 * LEDGERS_PER_DAY), &20u32, &(10 * LEDGERS_PER_DAY), &40u32);
+        client.set_decay_config(
+            &(10 * LEDGERS_PER_DAY),
+            &20u32,
+            &(10 * LEDGERS_PER_DAY),
+            &40u32,
+        );
 
         // Registered below the floor — decay must not promote them up to it.
         let borrower = Address::generate(&env);
@@ -1508,7 +1665,12 @@ mod test {
         extend_decay_ttls(&env);
         let (_admin, client) = setup(&env);
 
-        client.set_decay_config(&(10 * LEDGERS_PER_DAY), &0u32, &(10 * LEDGERS_PER_DAY), &0u32);
+        client.set_decay_config(
+            &(10 * LEDGERS_PER_DAY),
+            &0u32,
+            &(10 * LEDGERS_PER_DAY),
+            &0u32,
+        );
 
         let borrower = Address::generate(&env);
         register_for_decay(&env, &client, &borrower, 90);
@@ -1573,4 +1735,297 @@ mod test {
         assert_eq!(client.get_decay_start_ledger(&stranger), None);
     }
 
+    // ── Score Appeal & Re-Review Workflow ───────────────────────────────
+
+    fn setup_with_appeal(
+        env: &Env,
+    ) -> (
+        Address,
+        VerificationRegistryContractClient<'static>,
+        Address,
+        Address,
+    ) {
+        let (admin, client) = setup(env);
+        let reviewer = Address::generate(env);
+        client.set_reviewer(&reviewer);
+
+        let borrower = Address::generate(env);
+        let report_hash = BytesN::from_array(env, &[42u8; 32]);
+        client.register_verification(&borrower, &report_hash, &10_000u32, &60u32);
+
+        (admin, client, reviewer, borrower)
+    }
+
+    #[test]
+    fn test_appeal_score_records_score_and_ledger() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, client, _reviewer, borrower) = setup_with_appeal(&env);
+
+        let ledger_before = env.ledger().sequence();
+        client.appeal_score(&borrower);
+
+        let appeal = client.get_appeal(&borrower).unwrap();
+        assert_eq!(appeal.borrower, borrower);
+        assert_eq!(appeal.score_at_appeal, 60u32);
+        assert_eq!(appeal.requested_ledger, ledger_before);
+    }
+
+    #[test]
+    fn test_appeal_score_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, client, _reviewer, borrower) = setup_with_appeal(&env);
+
+        client.appeal_score(&borrower);
+
+        let events = env.events().all();
+        let last_event = events.last().unwrap();
+        let expected_topic: soroban_sdk::Vec<soroban_sdk::Val> =
+            soroban_sdk::vec![&env, symbol_short!("appeal").into_val(&env)];
+        assert_eq!(last_event.1, expected_topic);
+
+        let (event_borrower, event_score, _event_ledger): (Address, u32, u32) =
+            last_event.2.into_val(&env);
+        assert_eq!(event_borrower, borrower);
+        assert_eq!(event_score, 60u32);
+    }
+
+    #[test]
+    #[should_panic(expected = "HostError: Error(Auth, InvalidAction)")]
+    fn test_appeal_score_requires_borrower_auth() {
+        use soroban_sdk::testutils::{MockAuth, MockAuthInvoke};
+
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, client, _reviewer, borrower) = setup_with_appeal(&env);
+
+        let imposter = Address::generate(&env);
+        env.mock_auths(&[MockAuth {
+            address: &imposter,
+            invoke: &MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "appeal_score",
+                args: (borrower.clone(),).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        client.appeal_score(&borrower);
+    }
+
+    #[test]
+    fn test_appeal_score_fails_without_verification() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, client) = setup(&env);
+
+        let borrower = Address::generate(&env);
+        let result = client.try_appeal_score(&borrower);
+        assert_eq!(result, Err(Ok(RegistryError::VerificationNotFound)));
+    }
+
+    #[test]
+    fn test_appeal_score_fails_for_expired_verification() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, client, _reviewer, borrower) = setup_with_appeal(&env);
+
+        // Re-register with a short duration so it expires quickly.
+        let report_hash = BytesN::from_array(&env, &[43u8; 32]);
+        let start = env.ledger().sequence();
+        client.register_verification(&borrower, &report_hash, &100u32, &60u32);
+        env.ledger().set_sequence_number(start + 101);
+
+        let result = client.try_appeal_score(&borrower);
+        assert_eq!(result, Err(Ok(RegistryError::VerificationNotFound)));
+    }
+
+    #[test]
+    fn test_appeal_score_second_appeal_fails_while_open() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, client, _reviewer, borrower) = setup_with_appeal(&env);
+
+        client.appeal_score(&borrower);
+
+        let result = client.try_appeal_score(&borrower);
+        assert_eq!(result, Err(Ok(RegistryError::AppealAlreadyOpen)));
+    }
+
+    #[test]
+    fn test_appeal_score_can_reopen_after_resolution() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, client, _reviewer, borrower) = setup_with_appeal(&env);
+
+        client.appeal_score(&borrower);
+        client.resolve_appeal(&borrower, &75u32);
+
+        // The first appeal is closed, so a new one may be filed.
+        client.appeal_score(&borrower);
+        let appeal = client.get_appeal(&borrower).unwrap();
+        assert_eq!(appeal.score_at_appeal, 75u32);
+    }
+
+    #[test]
+    fn test_resolve_appeal_updates_score_and_clears_appeal() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, client, _reviewer, borrower) = setup_with_appeal(&env);
+
+        client.appeal_score(&borrower);
+        client.resolve_appeal(&borrower, &85u32);
+
+        assert_eq!(client.get_raw_score(&borrower), 85u32);
+        assert_eq!(client.get_appeal(&borrower), None);
+    }
+
+    #[test]
+    fn test_resolve_appeal_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, client, reviewer, borrower) = setup_with_appeal(&env);
+
+        client.appeal_score(&borrower);
+        client.resolve_appeal(&borrower, &85u32);
+
+        let events = env.events().all();
+        let last_event = events.last().unwrap();
+        let expected_topic: soroban_sdk::Vec<soroban_sdk::Val> =
+            soroban_sdk::vec![&env, symbol_short!("apl_res").into_val(&env)];
+        assert_eq!(last_event.1, expected_topic);
+
+        let (event_reviewer, event_borrower, event_old_score, event_new_score): (
+            Address,
+            Address,
+            u32,
+            u32,
+        ) = last_event.2.into_val(&env);
+        assert_eq!(event_reviewer, reviewer);
+        assert_eq!(event_borrower, borrower);
+        assert_eq!(event_old_score, 60u32);
+        assert_eq!(event_new_score, 85u32);
+    }
+
+    #[test]
+    fn test_resolve_appeal_requires_open_appeal() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, client, _reviewer, borrower) = setup_with_appeal(&env);
+
+        // No appeal has been filed yet.
+        let result = client.try_resolve_appeal(&borrower, &85u32);
+        assert_eq!(result, Err(Ok(RegistryError::NoOpenAppeal)));
+    }
+
+    #[test]
+    fn test_resolve_appeal_without_reviewer_configured_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, client) = setup(&env);
+
+        let borrower = Address::generate(&env);
+        let report_hash = BytesN::from_array(&env, &[44u8; 32]);
+        client.register_verification(&borrower, &report_hash, &1_000u32, &60u32);
+        client.appeal_score(&borrower);
+
+        let result = client.try_resolve_appeal(&borrower, &85u32);
+        assert_eq!(result, Err(Ok(RegistryError::ReviewerNotConfigured)));
+    }
+
+    #[test]
+    fn test_resolve_appeal_rejects_invalid_score() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, client, _reviewer, borrower) = setup_with_appeal(&env);
+
+        client.appeal_score(&borrower);
+
+        let result = client.try_resolve_appeal(&borrower, &101u32);
+        assert_eq!(result, Err(Ok(RegistryError::InvalidScore)));
+        // The open appeal survives a rejected resolution attempt.
+        assert!(client.get_appeal(&borrower).is_some());
+    }
+
+    #[test]
+    fn test_borrower_cannot_resolve_own_appeal() {
+        use soroban_sdk::testutils::{MockAuth, MockAuthInvoke};
+
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, client, _reviewer, borrower) = setup_with_appeal(&env);
+
+        client.appeal_score(&borrower);
+
+        // The borrower authorizes the call themselves — but resolve_appeal
+        // requires the configured *reviewer's* auth, which is never provided
+        // here, so this must fail regardless of who "sent" the call.
+        let result = client
+            .mock_auths(&[MockAuth {
+                address: &borrower,
+                invoke: &MockAuthInvoke {
+                    contract: &client.address,
+                    fn_name: "resolve_appeal",
+                    args: (borrower.clone(), 90u32).into_val(&env),
+                    sub_invokes: &[],
+                },
+            }])
+            .try_resolve_appeal(&borrower, &90u32);
+
+        assert!(result.is_err());
+        // The appeal is untouched and the score wasn't changed.
+        assert!(client.get_appeal(&borrower).is_some());
+        assert_eq!(client.get_raw_score(&borrower), 60u32);
+    }
+
+    #[test]
+    fn test_only_reviewer_can_resolve_appeal() {
+        use soroban_sdk::testutils::{MockAuth, MockAuthInvoke};
+
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, client, _reviewer, borrower) = setup_with_appeal(&env);
+
+        client.appeal_score(&borrower);
+
+        let random_third_party = Address::generate(&env);
+        let result = client
+            .mock_auths(&[MockAuth {
+                address: &random_third_party,
+                invoke: &MockAuthInvoke {
+                    contract: &client.address,
+                    fn_name: "resolve_appeal",
+                    args: (borrower.clone(), 90u32).into_val(&env),
+                    sub_invokes: &[],
+                },
+            }])
+            .try_resolve_appeal(&borrower, &90u32);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_set_reviewer_requires_admin_auth() {
+        use soroban_sdk::testutils::{MockAuth, MockAuthInvoke};
+
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, client) = setup(&env);
+
+        let attacker = Address::generate(&env);
+        let reviewer = Address::generate(&env);
+        let result = client
+            .mock_auths(&[MockAuth {
+                address: &attacker,
+                invoke: &MockAuthInvoke {
+                    contract: &client.address,
+                    fn_name: "set_reviewer",
+                    args: (reviewer.clone(),).into_val(&env),
+                    sub_invokes: &[],
+                },
+            }])
+            .try_set_reviewer(&reviewer);
+
+        assert!(result.is_err());
+    }
 }

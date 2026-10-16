@@ -10,16 +10,11 @@
 extern crate std;
 
 use crate::{
-    test_utils::advance_ledger_sequence,
-    types::EscrowConfig,
-    EscrowContract, EscrowContractClient, LEDGERS_PER_MONTH,
+    test_utils::advance_ledger_sequence, types::EscrowConfig, EscrowContract, EscrowContractClient,
+    LEDGERS_PER_MONTH,
 };
 use proptest::prelude::*;
-use soroban_sdk::{
-    testutils::Address as _,
-    token::StellarAssetClient,
-    Address, Env, Symbol,
-};
+use soroban_sdk::{testutils::Address as _, token::StellarAssetClient, Address, Env, Symbol};
 
 // ─── Budget constants ─────────────────────────────────────────────────────────
 
@@ -36,10 +31,10 @@ fn make_config(admin: Address, token: Address) -> EscrowConfig {
         max_duration_ledgers: 518_400,
         early_withdrawal_penalty_bps: 500,
         min_duration_ledgers: 0,
-        penalty_bps_tier1: 500,  // 5 %  months 1-2
-        penalty_bps_tier2: 300,  // 3 %  months 3-4
-        penalty_bps_tier3: 150,  // 1.5% months 5-6
-        penalty_bps_tier4: 50,   // 0.5% month 7+
+        penalty_bps_tier1: 500, // 5 %  months 1-2
+        penalty_bps_tier2: 300, // 3 %  months 3-4
+        penalty_bps_tier3: 150, // 1.5% months 5-6
+        penalty_bps_tier4: 50,  // 0.5% month 7+
         grace_period_ledgers: 10,
         default_penalty_bps: 1_000,
         instance_bump_amount: 1_000,
@@ -85,8 +80,8 @@ proptest! {
         env.mock_all_auths();
         let (_, borrower, token_addr, goal_id, client) = setup(&env);
         let token = soroban_sdk::token::Client::new(&env, &token_addr);
-        
-        // Mint the specific amount needed to avoid insufficient balance, 
+
+        // Mint the specific amount needed to avoid insufficient balance,
         // without overflowing the total token supply if it was already minted.
         StellarAssetClient::new(&env, &token_addr).mint(&borrower, &amount);
 

@@ -5,7 +5,7 @@ import { Queue, QueueOptions, Job, JobsOptions } from "bullmq";
 import { getClusterClient, isClusterMode, getClusterStatus } from "./redisCluster.js";
 import logger from "../utils/logger.js";
 
-export type NotificationJobType = "EMAIL" | "WEBHOOK" | "SMS";
+export type NotificationJobType = "EMAIL" | "WEBHOOK" | "SMS" | "PUSH";
 
 export interface NotificationJobData {
   notificationId: string;

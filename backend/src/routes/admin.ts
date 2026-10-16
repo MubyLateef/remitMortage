@@ -25,20 +25,21 @@ import {
   MAX_LATENCY_WINDOW_MINUTES,
 } from "../services/webhookLatency.js";
 import { listSuppressedApplicants } from "../services/emailSuppression.js";
+import { runTableBloatScan, getLatestTableBloatSnapshots } from "../services/tableBloatMonitor.js";
+import { getApplicantCommunicationTimeline } from "../services/communicationTimeline.js";
 import { runUnusedIndexAuditJob } from "../jobs/unusedIndexAudit.js";
 import {
-  createApprovalRequest,
-  getApprovalRequest,
-  listPendingApprovalRequests,
-  approveRequest,
-  rejectRequest,
-  markExecuted,
-  FourEyesError,
-} from "../services/fourEyesApproval.js";
-import { requiresFourEyesApproval } from "../services/fourEyesPolicy.js";
-import { DEPRECATED_ENDPOINTS } from "../middleware/apiVersioning.js";
-import { httpRequestsByVersionTotal } from "../services/metrics.js";
+  ForensicsReviewError,
+  listFlaggedDocuments,
+  reviewFlaggedDocument,
+} from "../services/kycDocumentForensics.js";
 import { loadConfig } from "../config.js";
+import {
+  getModelConfig,
+  getShadowEvaluations,
+  getShadowMetrics,
+  updateModelConfig,
+} from "../services/scoring.js";
 
 export const adminRouter = Router();
 
@@ -180,6 +181,24 @@ adminRouter.get("/loans/:id/tax-id-matches", requireAdmin, async (req: Authentic
   } catch (error) {
     logger.error("Tax ID match lookup error", { error });
     return res.status(500).json({ error: "failed_to_load_tax_id_matches" });
+  }
+});
+
+/**
+ * Unified email/SMS/in-app notification timeline for one applicant, so
+ * support staff can answer "did they actually receive our reminder?" without
+ * checking three separate logs. `:id` may be an applicant id or stellar address.
+ */
+adminRouter.get("/applicants/:id/communications", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const timeline = await getApplicantCommunicationTimeline(String(req.params.id));
+    if (!timeline) {
+      return res.status(404).json({ error: "not_found", message: "Applicant not found" });
+    }
+    return res.json(timeline);
+  } catch (error) {
+    logger.error("Applicant communication timeline error", { error });
+    return res.status(500).json({ error: "failed_to_load_communication_timeline" });
   }
 });
 
@@ -443,51 +462,35 @@ adminRouter.get("/email-suppressions", requireAdmin, async (_req: AuthenticatedR
 });
 
 /**
- * @openapi
- * /api/admin/db/unused-indexes:
- *   get:
- *     summary: Manually trigger the unused-index candidate report
- *     description: >-
- *       Report-only (issue #758). Scans pg_stat_user_indexes for indexes with
- *       sustained near-zero usage, excludes constraint-backing indexes, and
- *       returns candidates with table/columns/size context for human review.
- *       Never drops an index — see docs/UNUSED_INDEX_REVIEW.md.
- *     tags:
- *       - Admin
- *     responses:
- *       200:
- *         description: Unused-index report.
+ * Latest dead-tuple bloat snapshot per table, most bloated first, for the
+ * database health dashboard.
  */
-adminRouter.get("/db/unused-indexes", requireAdmin, async (_req: AuthenticatedRequest, res: Response) => {
+adminRouter.get("/database/table-bloat", requireAdmin, async (_req: AuthenticatedRequest, res: Response) => {
   try {
-    const { report } = await runUnusedIndexAuditJob();
-    return res.json(report);
+    return res.json({ tables: await getLatestTableBloatSnapshots() });
   } catch (error) {
-    logger.error("Unused index audit error", { error });
-    return res.status(500).json({ error: "unused_index_audit_failed" });
+    logger.error("List table bloat snapshots error", { error });
+    return res.status(500).json({ error: "failed_to_list_table_bloat" });
   }
 });
 
-/**
- * @openapi
- * /api/admin/db/query-killer:
- *   post:
- *     summary: Manually trigger the long-running query killer sweep
- *     description: >-
- *       Ops-only (issue #736). Terminates backends running past
- *       QUERY_KILLER_THRESHOLD_MS, never touching the documented
- *       maintenance allowlist. Every termination is logged/alerted with
- *       query text and origin context.
- *     tags:
- *       - Admin
- */
-adminRouter.post("/db/query-killer", requireAdmin, async (_req: AuthenticatedRequest, res: Response) => {
+/** Triggers an on-demand bloat scan, manually VACUUMing any table at or above the critical threshold. */
+adminRouter.post("/database/table-bloat/scan", requireAdmin, async (_req: AuthenticatedRequest, res: Response) => {
   try {
-    const { runQueryKillerJob } = await import("../jobs/queryKiller.js");
-    return res.json(await runQueryKillerJob());
+    const result = await runTableBloatScan();
+    return res.json({
+      scannedAt: result.scannedAt,
+      tablesScanned: result.tablesScanned,
+      findings: result.findings.map((f) => ({
+        ...f,
+        liveTuples: f.liveTuples.toString(),
+        deadTuples: f.deadTuples.toString(),
+        tableSizeBytes: f.tableSizeBytes.toString(),
+      })),
+    });
   } catch (error) {
-    logger.error("Query killer error", { error });
-    return res.status(500).json({ error: "query_killer_failed" });
+    logger.error("Table bloat scan error", { error });
+    return res.status(500).json({ error: "table_bloat_scan_failed" });
   }
 });
 
@@ -699,26 +702,38 @@ adminRouter.post("/scoring/models", requireAdmin, async (req: AuthenticatedReque
   }
 });
 
-// ── API versioning visibility (issue #847) ───────────────────────────────
-// So a retirement decision for an old API version is data-driven rather
-// than a guess, and so deprecated endpoints are discoverable without
-// grepping the codebase. See docs/API_VERSIONING_POLICY.md.
+// ── KYC document forgery review (issue #813) ─────────────────────────────
+// Documents whose metadata looked tampered with are queued here for a human;
+// each entry carries the specific signals that triggered the flag.
 
-adminRouter.get("/api-versions/usage", requireAdmin, async (_req: AuthenticatedRequest, res: Response) => {
+adminRouter.get("/kyc/flagged-documents", requireAdmin, async (_req: AuthenticatedRequest, res: Response) => {
   try {
-    const metric = await httpRequestsByVersionTotal.get();
-    const byVersion: Record<string, number> = {};
-    for (const entry of metric.values) {
-      const version = String(entry.labels.version ?? "unknown");
-      byVersion[version] = (byVersion[version] ?? 0) + entry.value;
-    }
-
-    return res.json({
-      requestsByVersion: byVersion,
-      deprecatedEndpoints: DEPRECATED_ENDPOINTS,
-    });
+    return res.json({ documents: await listFlaggedDocuments() });
   } catch (error) {
-    logger.error("API version usage report error", { error });
-    return res.status(500).json({ error: "failed_to_load_version_usage" });
+    logger.error("List flagged KYC documents error", { error });
+    return res.status(500).json({ error: "failed_to_list_flagged_documents" });
   }
 });
+
+adminRouter.post(
+  "/kyc/flagged-documents/:documentId/review",
+  requireAdmin,
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const reviewed = await reviewFlaggedDocument({
+        documentId: String(req.params.documentId),
+        reviewedBy: req.user?.walletAddress ?? "admin-api-key",
+        outcome: req.body?.outcome,
+        note: typeof req.body?.note === "string" ? req.body.note : null,
+      });
+      return res.json({ document: reviewed });
+    } catch (error) {
+      if (error instanceof ForensicsReviewError) {
+        const status = error.code === "not_found" ? 404 : error.code === "invalid_outcome" ? 400 : 409;
+        return res.status(status).json({ error: error.code, message: error.message });
+      }
+      logger.error("Review flagged KYC document error", { error });
+      return res.status(500).json({ error: "failed_to_review_document" });
+    }
+  }
+);

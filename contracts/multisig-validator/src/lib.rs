@@ -130,7 +130,11 @@ impl MultisigValidator {
         }
         let now = env.ledger().sequence();
         // last_vote_ledger == 0 means never voted — initialize to now (full weight)
-        let anchor = if last_vote_ledger == 0 { now } else { last_vote_ledger };
+        let anchor = if last_vote_ledger == 0 {
+            now
+        } else {
+            last_vote_ledger
+        };
         if now <= anchor {
             return 0;
         }
@@ -139,8 +143,8 @@ impl MultisigValidator {
             return 0;
         }
         let overdue = (elapsed - cfg.grace_ledgers) as u64;
-        let bps = overdue.saturating_mul(cfg.decay_bps_per_period as u64)
-            / cfg.period_ledgers as u64;
+        let bps =
+            overdue.saturating_mul(cfg.decay_bps_per_period as u64) / cfg.period_ledgers as u64;
         bps.min((BPS_DENOMINATOR - cfg.min_weight_bps) as u64) as u32
     }
 
@@ -172,9 +176,10 @@ impl MultisigValidator {
             return Err(ValidatorError::InvalidThreshold);
         }
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::Config(account.clone()), &MultisigConfig { signers, threshold });
+        env.storage().persistent().set(
+            &DataKey::Config(account.clone()),
+            &MultisigConfig { signers, threshold },
+        );
         Self::bump_instance(&env);
         Ok(())
     }
@@ -265,9 +270,10 @@ impl MultisigValidator {
         delay_seconds: u64,
     ) -> Result<(), ValidatorError> {
         account.require_auth();
-        env.storage()
-            .persistent()
-            .set(&DataKey::TimelockConfig(account), &TimelockConfig { delay_seconds });
+        env.storage().persistent().set(
+            &DataKey::TimelockConfig(account),
+            &TimelockConfig { delay_seconds },
+        );
         Self::bump_instance(&env);
         Ok(())
     }
@@ -389,10 +395,7 @@ impl MultisigValidator {
 
     /// Execute a timelocked proposal. Fails if not Locked, if the timelock
     /// delay has not yet elapsed, or if the proposal has expired.
-    pub fn execute_action(
-        env: Env,
-        proposal_id: BytesN<32>,
-    ) -> Result<(), ValidatorError> {
+    pub fn execute_action(env: Env, proposal_id: BytesN<32>) -> Result<(), ValidatorError> {
         let mut proposal: Proposal = env
             .storage()
             .persistent()
@@ -472,7 +475,9 @@ impl MultisigValidator {
     }
 
     fn write_admin_config(env: &Env, config: &AdminMultisigConfig) {
-        env.storage().persistent().set(&DataKey::AdminConfig, config);
+        env.storage()
+            .persistent()
+            .set(&DataKey::AdminConfig, config);
         Self::bump_instance(env);
     }
 
@@ -547,7 +552,13 @@ impl MultisigValidator {
             return Err(ValidatorError::InvalidThreshold);
         }
 
-        Self::write_admin_config(&env, &AdminMultisigConfig { signers: signers.clone(), threshold });
+        Self::write_admin_config(
+            &env,
+            &AdminMultisigConfig {
+                signers: signers.clone(),
+                threshold,
+            },
+        );
         Self::record_rotation(&env);
         let now_ledger = env.ledger().sequence();
         let now_ts = env.ledger().timestamp();
@@ -637,10 +648,7 @@ impl MultisigValidator {
     /// Configure the minimum cooldown in ledgers between successive
     /// admin signer-set changes (`configure_signers` / `add_signer` /
     /// `remove_signer`). Admin-only. `0` disables the cooldown.
-    pub fn set_rotation_cooldown(
-        env: Env,
-        cooldown_ledgers: u32,
-    ) -> Result<(), ValidatorError> {
+    pub fn set_rotation_cooldown(env: Env, cooldown_ledgers: u32) -> Result<(), ValidatorError> {
         Self::require_admin(&env)?;
         env.storage()
             .instance()
@@ -671,10 +679,7 @@ impl MultisigValidator {
     /// Count how many of the presented `signers` are valid members of the
     /// admin-managed signer set. Duplicate presented addresses are counted once,
     /// and addresses not in the configured set are ignored.
-    pub fn count_valid_signers(
-        env: Env,
-        signers: Vec<Address>,
-    ) -> Result<u32, ValidatorError> {
+    pub fn count_valid_signers(env: Env, signers: Vec<Address>) -> Result<u32, ValidatorError> {
         let config = Self::read_admin_config(&env)?;
 
         let len = signers.len();
@@ -707,10 +712,7 @@ impl MultisigValidator {
 
     /// Returns `true` iff the number of distinct valid signers presented meets
     /// or exceeds the configured threshold.
-    pub fn verify_signatures(
-        env: Env,
-        signers: Vec<Address>,
-    ) -> Result<bool, ValidatorError> {
+    pub fn verify_signatures(env: Env, signers: Vec<Address>) -> Result<bool, ValidatorError> {
         let config = Self::read_admin_config(&env)?;
         let count = Self::count_valid_signers(env, signers)?;
         Ok(count >= config.threshold)
@@ -719,10 +721,7 @@ impl MultisigValidator {
     /// Like `verify_signatures` but reverts with `InsufficientWeight` when the
     /// number of valid signatures is below the configured threshold. Convenient
     /// as a single `?`-propagatable authorization gate.
-    pub fn enforce_signatures(
-        env: Env,
-        signers: Vec<Address>,
-    ) -> Result<(), ValidatorError> {
+    pub fn enforce_signatures(env: Env, signers: Vec<Address>) -> Result<(), ValidatorError> {
         if Self::verify_signatures(env, signers)? {
             Ok(())
         } else {
@@ -756,7 +755,9 @@ impl MultisigValidator {
             penalty_weight_reduction_pct,
             recovery_active_votes,
         };
-        env.storage().persistent().set(&DataKey::SlashingConfig, &config);
+        env.storage()
+            .persistent()
+            .set(&DataKey::SlashingConfig, &config);
         Self::bump_instance(&env);
         Ok(())
     }
@@ -966,10 +967,7 @@ impl MultisigValidator {
     }
 
     /// Admin endpoint to reset a signer's penalty manually.
-    pub fn reset_signer_penalty(
-        env: Env,
-        signer: Address,
-    ) -> Result<(), ValidatorError> {
+    pub fn reset_signer_penalty(env: Env, signer: Address) -> Result<(), ValidatorError> {
         Self::require_admin(&env)?;
 
         // Reset for all accounts this signer might belong to
@@ -985,10 +983,9 @@ impl MultisigValidator {
         // Store with a placeholder account; in production you'd iterate accounts
         // For now, this is a best-effort reset
         let admin = Self::get_admin(env.clone())?;
-        env.storage().persistent().set(
-            &DataKey::SignerVoteRecord(admin, signer),
-            &record,
-        );
+        env.storage()
+            .persistent()
+            .set(&DataKey::SignerVoteRecord(admin, signer), &record);
         Self::bump_instance(&env);
         Ok(())
     }
@@ -1010,10 +1007,18 @@ impl MultisigValidator {
         min_weight_bps: u32,
     ) -> Result<(), ValidatorError> {
         Self::require_admin(&env)?;
-        if period_ledgers == 0 || decay_bps_per_period > BPS_DENOMINATOR || min_weight_bps > BPS_DENOMINATOR {
+        if period_ledgers == 0
+            || decay_bps_per_period > BPS_DENOMINATOR
+            || min_weight_bps > BPS_DENOMINATOR
+        {
             return Err(ValidatorError::InvalidThreshold);
         }
-        let cfg = DecayConfig { grace_ledgers, decay_bps_per_period, period_ledgers, min_weight_bps };
+        let cfg = DecayConfig {
+            grace_ledgers,
+            decay_bps_per_period,
+            period_ledgers,
+            min_weight_bps,
+        };
         env.storage().instance().set(&DataKey::DecayConfig, &cfg);
         Self::bump_instance(&env);
         Ok(())

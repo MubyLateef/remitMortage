@@ -70,6 +70,36 @@ pub struct PoolConfig {
     /// existing integrations are unaffected until an admin opts in via
     /// `set_application_fee_bps`.
     pub application_fee_bps: u32,
+    /// How long a borrower must have held an escrow savings relationship
+    /// before their early-prepayment penalty is waived, measured in ledgers
+    /// at the moment the loan was originated.
+    ///
+    /// The waiver is a loyalty reward for borrowers who actually built their
+    /// down payment through the escrow savings programme, rather than a
+    /// discount handed to anyone who takes a loan. A borrower whose recorded
+    /// relationship age meets this threshold pays no penalty when `repay`
+    /// closes their loan ahead of schedule; anyone below it is charged the
+    /// standard penalty unchanged. Because it only forgives a fee and never
+    /// touches principal or interest, waiving it does not erode the pool's
+    /// interest revenue.
+    ///
+    /// The age is latched onto the loan at origination
+    /// (`LoanRecord::escrow_relationship_ledgers`) from the relationship start
+    /// recorded by the escrow bridge, so a borrower cannot change their own
+    /// eligibility mid-loan by opening or extending an escrow account. The
+    /// threshold in force at repayment is the one applied, so governance
+    /// changes still take effect on loans that are already running.
+    ///
+    /// `0` — the deployment default — disables the waiver entirely, so every
+    /// borrower is charged the standard penalty until an admin opts in via
+    /// `set_prepay_waiver_ledgers`. `0` cannot mean "waive
+    /// everyone": a borrower with no escrow relationship records an age of
+    /// `0`, and the two must not collide.
+    ///
+    /// Named `prepay_waiver_ledgers` rather than the longer
+    /// `prepayment_penalty_waiver_ledgers` because Soroban caps contract-type
+    /// field names at 30 characters.
+    pub prepay_waiver_ledgers: u32,
     /// Minimum number of ledgers an LP's deposit must remain in the pool
     /// before a withdrawal is allowed. 0 means no lockup.
     pub lockup_duration_ledgers: u32,
@@ -103,6 +133,31 @@ pub struct PoolConfig {
     /// behaviour is unchanged until an admin opts in via
     /// `set_max_single_withdrawal`.
     pub max_single_withdrawal: i128,
+    /// Minimum number of ledgers that must elapse between an investor's
+    /// consecutive deposits.  Prevents rapid-fire deposit spam that could
+    /// grief pool accounting or exploit a buggy integration retry loop.
+    ///
+    /// `0` — the deployment default — disables the cooldown entirely, so
+    /// existing behaviour is unchanged until an admin opts in via
+    /// `set_deposit_cooldown_ledgers`.
+    pub deposit_cooldown_ledgers: u32,
+    /// Number of ledgers after a `request_refinance` call during which the
+    /// quoted rate is guaranteed.  `execute_refinance` is rejected once this
+    /// window has elapsed; the borrower must re-request to obtain a fresh
+    /// quote.
+    ///
+    /// `0` — the deployment default — means no expiry is enforced: the lock
+    /// holds indefinitely until executed or superseded.  Set a non-zero value
+    /// via `set_rate_lock_window_ledgers` to opt in.
+    pub rate_lock_window_ledgers: u32,
+    /// Maximum share of the insurance pool's current reserves that a single
+    /// `inject_emergency_liquidity` call may draw, expressed in basis points
+    /// (e.g. 2000 = 20 %).
+    ///
+    /// `0` — the deployment default — disables the cap entirely (no per-call
+    /// ceiling beyond the pool's actual reserve balance).  Set a non-zero
+    /// value via `set_emergency_injection_cap_bps` to opt in.
+    pub emergency_injection_cap_bps: u32,
     /// When true, only whitelisted addresses may call deposit, request_loan,
     /// and withdraw. Toggleable by admin for regulated or pilot deployments.
     /// `false` — the deployment default — preserves existing permissionless
@@ -220,6 +275,15 @@ pub struct LoanRecord {
     pub defaulted_ledger: u32,
     /// Optional escrow contract address that originated this loan via the bridge.
     pub escrow_origin: Option<Address>,
+    /// Age of the borrower's escrow savings relationship at the moment this
+    /// loan was originated, in ledgers. `0` means the borrower had no
+    /// recorded relationship.
+    ///
+    /// Latched at origination rather than read at repayment time so that the
+    /// early-prepayment penalty a borrower is assessed cannot be changed after
+    /// the fact by opening or closing an escrow account. See
+    /// `PoolConfig::prepay_waiver_ledgers` for how it is used.
+    pub escrow_relationship_ledgers: u32,
     /// Ledger sequence when the loan was refinanced.
     pub refinanced_at_ledger: Option<u32>,
     /// Previous interest rate before refinancing.
@@ -272,6 +336,27 @@ pub struct HalvingInfo {
 pub struct RestructureProposal {
     pub new_schedule: RepaymentSchedule,
     pub proposed_at_ledger: u32,
+}
+
+/// Rate-lock snapshot recorded when a refinance is requested.
+///
+/// The locked rate is guaranteed to apply on `execute_refinance` as long as
+/// the call arrives before `lock_expiry_ledger`.  After that ledger the
+/// borrower must call `request_refinance` again to obtain a fresh quote.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RefinanceRateLock {
+    /// The interest rate (bps) quoted at request time.  This is the rate that
+    /// will be written to the loan on a successful `execute_refinance`.
+    pub locked_rate_bps: u32,
+    /// Proposed new term length in months, also locked at request time.
+    pub locked_duration_months: u32,
+    /// Ledger sequence at or before which `execute_refinance` must be called.
+    /// A call arriving at a ledger strictly greater than this value is
+    /// rejected with `RefinanceRateLockExpired`.
+    pub lock_expiry_ledger: u32,
+    /// Ledger at which the request was made, used for event attribution.
+    pub requested_at_ledger: u32,
 }
 
 /// An individual item in a batch disbursement request.
@@ -341,6 +426,15 @@ pub enum DataKey {
     PendingAdmin,
     /// Total withdrawal fees collected and routed to treasury.
     TotalWithdrawalFees,
+    /// Ledger at which a borrower's escrow savings relationship began, as
+    /// recorded by the escrow bridge. Used to derive the relationship age that
+    /// gets latched onto a loan at origination, which in turn gates the
+    /// early-prepayment penalty waiver. A missing entry means the borrower has
+    /// no recorded relationship and latches an age of `0`.
+    EscrowRelationshipStart(Address),
+    /// Total early-prepayment penalties collected and routed to treasury.
+    /// Excludes penalties waived for loyalty, which are never charged.
+    TotalPrepaymentPenalties,
     /// Application (processing) fee escrowed for a loan, keyed by loan ID.
     /// Present only while a `Requested` loan is awaiting a final decision;
     /// removed as soon as the fee is settled — retained by `approve_loan`,
@@ -410,6 +504,38 @@ pub enum DataKey {
     LoanAssumption(BytesN<32>),
     /// Locked payoff quote for a loan, keyed by loan ID.
     PayoffQuote(BytesN<32>),
+}
+
+/// Storage keys for newer pool features.
+///
+/// Kept apart from [`DataKey`] because Soroban caps a `#[contracttype]` union
+/// at 50 cases and `DataKey` is already at that ceiling.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum FeatureKey {
+    /// Tranche seniority order the yield distribution waterfall processes
+    /// in. Absent under normal operation — the default `[Senior, Junior]` is
+    /// never written to storage by any current code path; this key exists
+    /// so tests can deliberately override it to simulate a misconfigured or
+    /// upgraded distribution routine and confirm the priority-order guard in
+    /// `repay` catches it. See `LendingPoolContract::assert_waterfall_priority_order`.
+    WaterfallOrder,
+    /// Ledger sequence of the most recent deposit for an investor address.
+    /// Absent until the investor makes their first deposit.
+    /// Used to enforce `deposit_cooldown_ledgers`.
+    InvestorLastDeposit(Address),
+    /// Rate-lock snapshot stored when `request_refinance` is called.
+    /// Cleared on successful `execute_refinance` or when superseded by a
+    /// new request.  Keyed by loan ID.
+    RefinanceRateLock(BytesN<32>),
+    /// Address of the Governance contract used to gate
+    /// `inject_emergency_liquidity`.  Absent until `set_governance_contract`
+    /// is called by the admin.
+    GovernanceContract,
+    /// Lifetime amount injected into the pool via `inject_emergency_liquidity`.
+    /// Tracked separately so it can be reconciled and repaid to the insurance
+    /// reserve as the pool recovers.
+    TotalEmergencyInjected,
 }
 
 /// A pending loan assumption request where an existing borrower proposes to transfer

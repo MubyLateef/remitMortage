@@ -5,7 +5,7 @@ jest.mock("jspdf");
 
 describe("generatePaymentHistoryPdf", () => {
   beforeEach(() => {
-    (jsPDF as jest.Mock).mockClear();
+    (jsPDF as unknown as jest.Mock).mockClear();
     // Reset any prototype methods we might mock
     (jsPDF.prototype.text as jest.Mock) = jest.fn();
     (jsPDF.prototype.setFontSize as jest.Mock) = jest.fn();

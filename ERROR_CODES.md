@@ -20,6 +20,8 @@ Auto-generated from `contracts/*/src/errors.rs` by `scripts/check_error_codes_sy
 | 12 | `Unauthorized` | Unauthorized access (not admin). |
 | 13 | `OperationTimeout` | Operation timeout. |
 | 14 | `InvalidAsset` | Invalid asset identifier. |
+| 15 | `MalformedPayload` | Malformed or truncated inbound bridge message payload. |
+| 16 | `UnsupportedVersion` | Unsupported cross-chain message version. |
 
 ## escrow (`EscrowError`)
 
@@ -49,20 +51,22 @@ Auto-generated from `contracts/*/src/errors.rs` by `scripts/check_error_codes_sy
 | 22 | `PenaltyProposalNotPending` | Penalty proposal is not pending. |
 | 23 | `EscrowGoalNotFound` | Escrow goal does not exist or has no deposits. |
 | 24 | `AddressNotWhitelisted` | Address is not whitelisted when permissioned mode is enabled. |
-| 25 | `InvalidAttestorConfig` | Attestor signer set is empty, has a duplicate, or the threshold is zero or exceeds the number of signers. |
-| 26 | `InvalidAttestation` | An attestor is not part of the configured signer set, or the same attestor was presented more than once, or no attestor config exists. |
-| 27 | `UnauthorizedBeneficiary` | Caller is not the designated beneficiary, or the designation target equals the owner itself. |
-| 28 | `InvalidInactivityPeriod` | Beneficiary inactivity period is zero or exceeds the configured storage TTL bump amounts. |
-| 29 | `BeneficiaryNotConfigured` | No beneficiary is designated for this borrower/goal escrow. |
-| 30 | `BeneficiaryAlreadyClaimed` | The beneficiary has already claimed this borrower/goal escrow. |
-| 31 | `NoClaimableFunds` | Escrow has no deposited balance, or is already released, withdrawn, or seized, so there is nothing for a beneficiary to claim. |
-| 32 | `BeneficiaryInactivityNotElapsed` | The owner inactivity period has not yet elapsed. |
-| 33 | `InsufficientAttestationQuorum` | Fewer approved attestations than the configured quorum threshold. |
+| 25 | `BeneficiaryNotConfigured` | Beneficiary has not been configured for this goal. |
+| 26 | `UnauthorizedBeneficiary` | Caller is not the designated beneficiary for this goal. |
+| 27 | `BeneficiaryInactivityNotElapsed` | The owner-inactivity period has not yet elapsed. |
+| 28 | `InsufficientAttestationQuorum` | Not enough valid attestations to satisfy the configured quorum. |
+| 29 | `InvalidAttestation` | One or more attestations were invalid or from unknown signers. |
+| 30 | `BeneficiaryAlreadyClaimed` | The beneficiary has already claimed this goal. |
+| 31 | `NoClaimableFunds` | There are no funds available to claim. |
+| 32 | `InvalidInactivityPeriod` | The inactivity period must be greater than zero ledgers. |
+| 33 | `InvalidAttestorConfig` | Attestor configuration must have a non-empty signer set and a valid threshold. |
 | 34 | `AutoDepositNotConfigured` | No auto-deposit schedule is configured for this borrower/goal escrow. |
 | 35 | `AutoDepositNotDue` | The auto-deposit interval has not elapsed since the last scheduled draw. |
 | 36 | `InsufficientAllowance` | The borrower's token allowance to the escrow is below the scheduled amount. |
 | 37 | `InsufficientBalance` | The borrower's token balance is below the scheduled amount. |
 | 38 | `InvalidAutoDepositInterval` | Auto-deposit interval must be greater than zero ledgers. |
+| 39 | `InvalidBeneficiaryShares` | Beneficiary split shares do not sum to exactly 10 000 basis points (100 %). |
+| 40 | `BeneficiaryListTooLarge` | Beneficiary list exceeds the maximum allowed number of recipients. |
 
 ## lending-pool (`PoolError`)
 
@@ -78,15 +82,11 @@ Auto-generated from `contracts/*/src/errors.rs` by `scripts/check_error_codes_sy
 | 8 | `InvalidLoanState` | Loan is not in the correct state for this operation. |
 | 9 | `InsufficientLiquidity` | Insufficient pool liquidity for the requested disbursement. |
 | 10 | `OverPayment` | Repayment exceeds remaining loan balance. |
-| 11 | `NotEligibleForDefault` | Loan has not met the criteria for default. |
 | 12 | `AlreadyDefaulted` | Loan has already defaulted. |
 | 13 | `ContractPaused` | Operation rejected because the contract is paused. |
 | 14 | `NotPendingAdmin` | Proposed new admin is not the caller or no transfer is pending. |
-| 15 | `UpgradeNotPending` | No pending upgrade exists to execute. |
 | 16 | `UpgradeTimelockActive` | Upgrade was proposed but the timelock delay has not elapsed yet. |
 | 17 | `TrancheMismatch` | Investor cannot change tranche after the initial deposit. |
-| 18 | `InsufficientJuniorCapital` | Junior tranche has insufficient capital to absorb this loss. |
-| 19 | `ApplicantNotVerified` | Borrower has no valid, non-expired verification record in the configured VerificationRegistry, so the loan request is rejected. |
 | 20 | `DailyBorrowLimitExceeded` | The daily borrow limit has been exceeded. |
 | 21 | `RefundExceedsDisbursed` | Refund amount exceeds the amount disbursed for the loan. |
 | 22 | `UnauthorizedContractor` | Disbursement recipient is not a whitelisted contractor. |
@@ -94,11 +94,6 @@ Auto-generated from `contracts/*/src/errors.rs` by `scripts/check_error_codes_sy
 | 24 | `InterestRateTooLow` | Interest rate for refinancing is below the allowed floor. |
 | 25 | `RefinanceNotEligible` | Loan cannot be refinanced. |
 | 26 | `LoanNotOverdue` | Loan is not yet overdue, so it cannot be marked as defaulted. |
-| 27 | `OracleUnavailable` | Oracle data is stale or unavailable. |
-| 28 | `OraclePriceInvalid` | Oracle price is zero or invalid. |
-| 29 | `LtvExceeded` | Requested loan exceeds the configured maximum LTV. |
-| 30 | `ReferralCycleDetected` | Referral relationships cannot contain cycles. |
-| 31 | `ReferralAlreadySet` | Referral relationship already exists. |
 | 32 | `RebateAlreadyClaimed` | Loan maturity rebate has already been claimed. |
 | 33 | `MissedPaymentsPreventRebate` | Loan has missed payments, so is ineligible for the maturity rebate. |
 | 34 | `NoRestructureProposal` | No pending restructure proposal for this loan. |
@@ -110,24 +105,35 @@ Auto-generated from `contracts/*/src/errors.rs` by `scripts/check_error_codes_sy
 | 40 | `DepositBelowMinimum` | Deposit is below the pool's configured minimum deposit amount. |
 | 41 | `CollateralRatioBreached` | Collateral release would breach the minimum collateralization ratio. |
 | 42 | `NoCollateralToRelease` | No collateral available for release. |
+| 43 | `CollateralAlreadySeized` | Collateral has already been seized. |
+| 44 | `InvalidCollateralRatio` | Invalid collateral ratio configuration. |
 | 45 | `OriginationFeeTooHigh` | Origination fee exceeds the full-disbursement ceiling. |
 | 46 | `BorrowerLoanCapExceeded` | Borrower already holds the maximum number of active loans permitted by `max_active_loans_per_borrower`. |
+| 47 | `RefinanceCooldownActive` | Refinancing request was submitted before the cooldown window elapsed. |
 | 48 | `ApplicationFeeTooHigh` | Application fee exceeds the ceiling permitted on a single application. |
 | 50 | `WithdrawalExceedsMaxSingleLimit` | Withdrawal amount exceeds the pool's configured per-transaction limit. |
-| 51 | `AddressNotWhitelisted` | Address is not whitelisted when permissioned mode is enabled. |
-| 52 | `RefinanceCooldownActive` | Refinancing request was submitted before the cooldown window elapsed. |
+| 51 | `PayoffQuoteNotFound` | No payoff quote exists for this loan. |
+| 52 | `PayoffQuoteExpired` | The payoff quote has expired; request a fresh quote. |
+| 53 | `InvalidQuoteWindow` | Payoff quotes are disabled (window is zero) or the window is invalid. |
+| 54 | `DepositCooldownActive` | Deposit attempted before the configured per-investor cooldown has elapsed. |
+| 55 | `RefinanceRateLockExpired` | Refinance execution attempted after the rate-lock window has expired. The borrower must call `request_refinance` again to obtain a fresh quote. |
+| 56 | `RefinanceRateLockNotFound` | No pending rate-lock exists for this loan; `request_refinance` must be called before `execute_refinance`. |
+| 57 | `InsurancePoolNotSet` | Emergency liquidity injection requires an InsurancePool to be configured. |
+| 58 | `GovernanceContractNotSet` | Emergency liquidity injection requires a GovernanceContract to be configured. |
+| 59 | `GovernanceProposalNotPassed` | The referenced governance proposal has not reached `Passed` status. |
+| 60 | `EmergencyInjectionCapExceeded` | Injection amount exceeds the configured percentage cap of insurance reserves. |
 
 ## lending-pool (`LoanAssumptionError`)
 
 | Code | Variant | Description |
 |------|---------|-------------|
-| 1 | `ContractPaused` | Operation rejected because the contract is paused. |
-| 2 | `LoanNotFound` | Loan not found. |
-| 3 | `LoanNotActive` | Loan must be in Approved state for this operation. |
-| 4 | `ApplicantNotVerified` | Borrower has no valid, non-expired verification record in the configured VerificationRegistry, so the loan request is rejected. |
-| 5 | `AssumptionAlreadyRequested` | A loan assumption request already exists for this loan. |
-| 6 | `AssumptionNotFound` | No pending loan assumption request found for this loan. |
-| 7 | `AssumptionNotAuthorized` | Loan assumption is not authorized by borrower or new borrower. |
+| 1 | `ContractPaused` |  |
+| 2 | `LoanNotFound` |  |
+| 3 | `LoanNotActive` |  |
+| 4 | `AssumptionNotAuthorized` |  |
+| 5 | `ApplicantNotVerified` |  |
+| 6 | `AssumptionNotFound` |  |
+| 7 | `AssumptionAlreadyRequested` |  |
 
 ## milestone (`MilestoneError`)
 
@@ -153,6 +159,18 @@ Auto-generated from `contracts/*/src/errors.rs` by `scripts/check_error_codes_sy
 | 18 | `BudgetChangeNotFound` | Budget change proposal not found. |
 | 19 | `BudgetChangeAlreadyExecuted` | Budget change proposal has already been executed. |
 | 20 | `BudgetChangeExceedsAllotment` | New budget exceeds the available loan allotment. |
+| 21 | `ArbitrationNotConfigured` | Arbitrators and window have not been configured by the admin. |
+| 22 | `InvalidArbitrationWindow` | Arbitration window must be greater than zero ledgers. |
+| 23 | `DisputeNotFound` | No arbitration dispute exists for this milestone. |
+| 24 | `DisputeAlreadyResolved` | The dispute has already been resolved. |
+| 25 | `ArbitrationWindowElapsed` | The arbitration window has elapsed; only the timeout resolution applies. |
+| 26 | `ArbitrationWindowOpen` | The arbitration window is still open. |
+| 27 | `InvalidPartialAmount` | Partial release amount must be greater than zero. |
+| 28 | `ExceedsRemainingAmount` | Partial release amount exceeds the milestone's remaining unreleased amount. |
+| 29 | `CannotReject` | Milestone cannot be rejected in its current status (only Proposed). |
+| 30 | `CannotResubmit` | Milestone cannot be resubmitted in its current status (only Rejected). |
+| 31 | `InvalidBonusConfig` | Performance bonus basis points must be within 0..=10000. |
+| 32 | `InvalidDeadline` | A milestone deadline must be a future ledger sequence. |
 
 ## multisig-validator (`ValidatorError`)
 
@@ -178,6 +196,8 @@ Auto-generated from `contracts/*/src/errors.rs` by `scripts/check_error_codes_sy
 | 18 | `AdminConfigNotSet` | The admin-managed signer set has not been configured. |
 | 19 | `ProposalExpired` | The proposal has expired (current ledger past expiration_ledger). |
 | 20 | `SignerPenalized` | Signer is penalized for repeated missed votes (weight reduced). |
+| 21 | `RotationCooldownActive` | A signer-set change was attempted before the rotation cooldown elapsed. |
+| 22 | `InvalidRotationCooldown` | Invalid rotation cooldown configuration. |
 
 ## verification-registry (`RegistryError`)
 
@@ -195,3 +215,6 @@ Auto-generated from `contracts/*/src/errors.rs` by `scripts/check_error_codes_sy
 | 10 | `InvalidRiskTransition` | Referral or risk state update would create an invalid cycle. |
 | 11 | `InvalidRateLimits` | Rate cap/floor values are invalid (floor > cap or cap > 10000). |
 | 12 | `InvalidDecayConfig` | Decay parameters are invalid (zero period, or scores out of range). |
+| 13 | `AppealAlreadyOpen` | The borrower already has an open appeal awaiting resolution. |
+| 14 | `NoOpenAppeal` | No open appeal exists for the borrower. |
+| 15 | `ReviewerNotConfigured` | No reviewer has been configured to resolve score appeals. |

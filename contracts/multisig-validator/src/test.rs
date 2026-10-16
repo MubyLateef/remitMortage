@@ -1112,11 +1112,16 @@ fn test_decay_interaction_with_slashing() {
     // Reset and do decay+penalty interaction
     env.ledger().set_sequence_number(3000);
     client.cast_vote(&account, &signer); // resets penalty? Actually need 3 active to recover, so still penalized
-    // Manually set penalized again for interaction test
+                                         // Manually set penalized again for interaction test
     env.as_contract(&client.address, || {
         env.storage().persistent().set(
             &DataKey::SignerVoteRecord(account.clone(), signer.clone()),
-            &SignerVoteRecord { consecutive_missed: 2, consecutive_active: 0, penalized: true, last_vote_ledger: 3000 },
+            &SignerVoteRecord {
+                consecutive_missed: 2,
+                consecutive_active: 0,
+                penalized: true,
+                last_vote_ledger: 3000,
+            },
         );
     });
     assert_eq!(client.effective_weight(&account, &signer), 50u32);

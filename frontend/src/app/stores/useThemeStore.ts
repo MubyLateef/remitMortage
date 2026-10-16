@@ -44,7 +44,7 @@ export const useThemeStore = create<ThemeState>((set, get) => {
     
     toggleTheme: () => {
       const { theme, palette } = get();
-      const next = theme === "dark" ? "light" : "dark";
+      const next: Theme = theme === "dark" ? "light" : "dark";
       const config = { theme: next, palette };
       applyThemeConfig(config);
       persistThemeConfig(config);
@@ -53,7 +53,7 @@ export const useThemeStore = create<ThemeState>((set, get) => {
     
     togglePalette: () => {
       const { theme, palette } = get();
-      const next = palette === "default" ? "colorblind" : "default";
+      const next: ColorPalette = palette === "default" ? "colorblind" : "default";
       const config = { theme, palette: next };
       applyThemeConfig(config);
       persistThemeConfig(config);

@@ -10,6 +10,7 @@ import {
   type LoanSnapshot,
 } from "./loanHistory.js";
 import { autoAssignApplicationReviewer } from "./assignmentQueue.js";
+import { priceNewOffer } from "./rateSheet.js";
 
 // lightweight id generator to avoid adding dependencies
 function makeId() {
@@ -33,6 +34,7 @@ export interface LoanApplication {
   id: string;
   borrowerAddress: string;
   amount: string;
+  loanType?: string;
   status: LoanStatus;
   reason?: string;
   createdAt: string;
@@ -46,6 +48,10 @@ export interface LoanApplication {
   /** Current servicer of record; absent while the originator services the loan. */
   servicer?: string;
   servicerContact?: string;
+  /** Rate this offer was priced at, in basis points. */
+  interestRateBps?: number;
+  /** Rate sheet version that priced this offer; absent for pre-versioning loans. */
+  rateSheetVersionId?: string;
 }
 
 /** Options for attaching a guarantor at application creation time. */
@@ -71,6 +77,8 @@ function mapLoanApplication(record: any): LoanApplication {
     manualReviewReason: record.manualReviewReason ?? undefined,
     servicer: record.servicer ?? undefined,
     servicerContact: record.servicerContact ?? undefined,
+    interestRateBps: record.interestRateBps ?? undefined,
+    rateSheetVersionId: record.rateSheetVersionId ?? undefined,
     createdAt: record.createdAt.toISOString(),
     // updatedAt is not on the schema model; fall back to createdAt
     updatedAt: (record.updatedAt ?? record.createdAt).toISOString(),
@@ -113,12 +121,19 @@ export async function createApplication(
   const applicant = await findOrCreateApplicant(borrowerAddress);
   const id = makeId();
 
+  // Issue #746: price from the rate sheet in effect right now and record which
+  // version that was, so the offer can be traced back to its exact rates.
+  const pricing = await priceNewOffer(applicant.creditScore, new Date());
+
   const record = await prisma.loanApplication.create({
     data: {
       id,
       applicantId: applicant.id,
       principal: Number(amount),
       status: "Pending",
+      ...(pricing
+        ? { interestRateBps: pricing.interestRateBps, rateSheetVersionId: pricing.rateSheetVersionId }
+        : {}),
       ...(guarantor
         ? {
             guarantorAddress: guarantor.address,
@@ -314,7 +329,7 @@ export async function bulkReviewApplications(
 
   for (const item of items) {
     try {
-      const result = await prisma.$transaction(async (tx) => {
+      const result = await prisma.$transaction(async (tx: any) => {
         const application = await tx.loanApplication.findFirst({
           where: { id: item.applicationId, deletedAt: null },
           include: { applicant: true },
@@ -359,85 +374,6 @@ export async function bulkReviewApplications(
         return { applicationId: updated.id, decision: item.decision, status };
       });
       results.push(result);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "review_failed";
-      failures.push({ applicationId: item.applicationId, error: message });
-    }
-  }
-
-  return { results, failures };
-}
-
-export type BulkReviewDecision = "approve" | "reject";
-
-export interface BulkReviewItem {
-  applicationId: string;
-  decision: BulkReviewDecision;
-  reason?: string;
-}
-
-export interface BulkReviewResult {
-  applicationId: string;
-  decision: BulkReviewDecision;
-  status: LoanStatus;
-}
-
-/**
- * Review applications independently while keeping each state change and its
- * compliance audit event in one database transaction. A rejected item does
- * not roll back successful decisions for other applications in the batch.
- */
-export async function bulkReviewApplications(
-  items: BulkReviewItem[],
-  reviewerAddress: string,
-  ipAddress?: string,
-) {
-  const results: BulkReviewResult[] = [];
-  const failures: Array<{ applicationId: string; error: string }> = [];
-
-  for (const item of items) {
-    try {
-      const result = await (prisma.$transaction as any)(async (tx: any) => {
-        const application = await tx.loanApplication.findFirst({
-          where: { id: item.applicationId, deletedAt: null },
-          include: { applicant: true },
-        });
-
-        if (!application) throw new Error("not_found");
-        if (application.status !== "Pending") throw new Error("invalid_state");
-        if (application.principal <= 0 || application.applicant.deletedAt !== null) {
-          throw new Error("ineligible");
-        }
-        if (application.applicant.verificationStatus === "INELIGIBLE") {
-          throw new Error("ineligible");
-        }
-
-        const status = item.decision === "approve" ? "Approved" : "Rejected";
-        const updated = await tx.loanApplication.update({
-          where: { id: item.applicationId },
-          data: { status, statusUpdatedAt: new Date() },
-          include: { applicant: true },
-        });
-
-        await tx.auditLog.create({
-          data: {
-            action: `loan_application.bulk_${item.decision}d`,
-            actorAddress: reviewerAddress,
-            ipAddress,
-            metadata: {
-              applicationId: item.applicationId,
-              previousStatus: application.status,
-              newStatus: status,
-              decision: item.decision,
-              reason: item.reason ?? null,
-              reviewedAt: new Date().toISOString(),
-            },
-          },
-        });
-
-        return { applicationId: updated.id, decision: item.decision, status };
-      });
-      results.push(result as BulkReviewResult);
     } catch (error) {
       const message = error instanceof Error ? error.message : "review_failed";
       failures.push({ applicationId: item.applicationId, error: message });

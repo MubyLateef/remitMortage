@@ -19,6 +19,10 @@ pub struct MilestoneConfig {
     pub threshold: u32,
     /// Minimum number of ledgers that must elapse between approval and release.
     pub min_delay_ledgers: u32,
+    /// Basis points of a milestone's amount paid as a performance bonus from
+    /// the bonus pool when it qualifies (approved on first submission and
+    /// on or before its deadline). Zero disables bonuses entirely.
+    pub performance_bonus_bps: u32,
 }
 
 /// Milestone status lifecycle.
@@ -35,6 +39,11 @@ pub enum MilestoneStatus {
     /// `partially_approve_milestone`; the remainder is still pending and
     /// can be completed by further partial or full releases.
     PartiallyDisbursed = 5,
+    /// Sent back by a governance approver for the contractor to resubmit.
+    /// Once a milestone has ever been `Rejected`, it permanently forfeits
+    /// eligibility for the first-submission performance bonus even after a
+    /// successful resubmission and approval.
+    Rejected = 6,
 }
 
 /// Milestone record stored on-chain.
@@ -65,6 +74,17 @@ pub struct MilestoneRecord {
     /// partial or full release). `amount - released_amount` is the
     /// remaining unreleased portion still pending.
     pub released_amount: i128,
+    /// Ledger sequence by which approval must happen to remain eligible for
+    /// the performance bonus. Defaults to a far-future ledger at proposal
+    /// time (see `DEFAULT_MILESTONE_DEADLINE_LEDGERS`) and may be tightened
+    /// by the contractor via `set_milestone_deadline`.
+    pub deadline_ledger: u32,
+    /// True once this milestone has ever been rejected and resubmitted —
+    /// permanently disqualifies it from the performance bonus, even after a
+    /// later resubmission is cleanly approved.
+    pub was_resubmitted: bool,
+    /// True once a performance bonus has been paid out for this milestone.
+    pub bonus_awarded: bool,
 }
 
 /// A proposal to change the budget for an existing (pending) milestone.
@@ -152,4 +172,7 @@ pub enum DataKey {
     Dispute(BytesN<32>),
     /// Tracks whether an arbitrator has voted on a dispute.
     DisputeVoted(BytesN<32>, Address),
+    /// Accumulated token balance available to fund performance bonuses,
+    /// held by this contract separately from any loan capital.
+    BonusPool,
 }

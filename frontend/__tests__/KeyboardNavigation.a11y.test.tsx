@@ -93,6 +93,17 @@ async function expectNoFocusViolations(container: Element) {
   expect(violations).toEqual([]);
 }
 
+/**
+ * Tab forward until `target` has focus. The admin page puts a "View as user"
+ * panel ahead of the tab list, so keyboard users pass its controls first.
+ */
+async function tabTo(user: ReturnType<typeof userEvent.setup>, target: HTMLElement) {
+  for (let i = 0; i < 10 && document.activeElement !== target; i++) {
+    await user.tab();
+  }
+  expect(target).toHaveFocus();
+}
+
 beforeEach(() => {
   global.fetch = jest.fn(async () => ({
     ok: true,
@@ -137,8 +148,7 @@ describe("Milestone approval flow", () => {
     const { container } = render(<AdminPage />);
     const loansTab = await screen.findByRole("tab", { name: /Pending Loans/ });
 
-    await user.tab();
-    expect(loansTab).toHaveFocus();
+    await tabTo(user, loansTab);
     expect(loansTab).toHaveAttribute("aria-selected", "true");
 
     await user.keyboard("{ArrowRight}");
@@ -147,12 +157,13 @@ describe("Milestone approval flow", () => {
     expect(milestonesTab).toHaveAttribute("aria-selected", "true");
     expect(loansTab).toHaveAttribute("tabindex", "-1");
 
+    // Communications is the last tab, so End and wrap-around both land on it.
     await user.keyboard("{End}");
-    expect(screen.getByRole("tab", { name: /Audit Log/ })).toHaveFocus();
+    expect(screen.getByRole("tab", { name: /Communications/ })).toHaveFocus();
     await user.keyboard("{Home}");
     expect(loansTab).toHaveFocus();
     await user.keyboard("{ArrowLeft}");
-    expect(screen.getByRole("tab", { name: /Audit Log/ })).toHaveFocus();
+    expect(screen.getByRole("tab", { name: /Communications/ })).toHaveFocus();
 
     await expectNoFocusViolations(container);
   });
@@ -160,9 +171,9 @@ describe("Milestone approval flow", () => {
   it("approves a milestone with the keyboard, trapping and returning focus", async () => {
     const user = userEvent.setup();
     render(<AdminPage />);
-    await screen.findByRole("tab", { name: /Pending Loans/ });
+    const pendingLoansTab = await screen.findByRole("tab", { name: /Pending Loans/ });
 
-    await user.tab();
+    await tabTo(user, pendingLoansTab);
     await user.keyboard("{ArrowRight}");
     await user.tab();
     expect(screen.getByRole("tabpanel")).toHaveFocus();
