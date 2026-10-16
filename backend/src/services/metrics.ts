@@ -222,6 +222,26 @@ export const schedulerJobsTotal = new Counter({
 });
 
 // ---------------------------------------------------------------------------
+// BullMQ queue monitoring metrics (issue #853)
+// ---------------------------------------------------------------------------
+
+/**
+ * Current job count per BullMQ queue and state (waiting/active/delayed/
+ * failed/completed/paused) — distinct from the generic
+ * `remitmortgage_scheduler_*` metrics above, which track the node-cron
+ * scheduler, not these BullMQ queues. Refreshed by
+ * services/queueMonitoring.ts#getAllQueueSummaries (called both from the
+ * dashboard/API and a scheduled refresh), so it stays current for
+ * alerting even when nobody is looking at the dashboard.
+ */
+export const queueDepthGauge = new Gauge({
+  name: "remitmortgage_queue_depth",
+  help: "Current BullMQ job count per queue and state.",
+  labelNames: ["queue", "state"] as const,
+  registers: [metricsRegistry],
+});
+
+// ---------------------------------------------------------------------------
 // Convenience helpers
 // ---------------------------------------------------------------------------
 

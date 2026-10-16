@@ -19,6 +19,7 @@ import { runDeadlockDetectionJob } from "./deadlockDetection.js";
 import { runUnusedIndexAuditJob } from "./unusedIndexAudit.js";
 import { runQueryKillerJob } from "./queryKiller.js";
 import { runFourEyesApprovalExpiryJob } from "./fourEyesApprovalExpiry.js";
+import { runQueueMetricsRefreshJob } from "./queueMetricsRefresh.js";
 import { applyDueServicingTransfers } from "../services/loanServicing.js";
 import { prisma } from "../services/db.js";
 import { createPrismaSlowQueryStore } from "../services/slowQueryLog.js";
@@ -39,6 +40,7 @@ let unusedIndexAuditTask: ReturnType<typeof cron.schedule> | null = null;
 let servicingTransferTask: ReturnType<typeof cron.schedule> | null = null;
 let queryKillerTask: ReturnType<typeof cron.schedule> | null = null;
 let fourEyesApprovalExpiryTask: ReturnType<typeof cron.schedule> | null = null;
+let queueMetricsRefreshTask: ReturnType<typeof cron.schedule> | null = null;
 
 export function startScheduler() {
   if (schedulerTask) {
@@ -66,6 +68,12 @@ export function startScheduler() {
   fourEyesApprovalExpiryTask = cron.schedule(fourEyesExpirySchedule, async () => {
     console.log("[Scheduler] Triggering four-eyes approval expiry sweep...");
     await runFourEyesApprovalExpiryJob();
+  }, { timezone: "UTC" });
+
+  // Every minute: refresh BullMQ queue-depth metrics for alerting (issue #853)
+  const queueMetricsSchedule = process.env.QUEUE_METRICS_REFRESH_CRON_SCHEDULE || "* * * * *";
+  queueMetricsRefreshTask = cron.schedule(queueMetricsSchedule, async () => {
+    await runQueueMetricsRefreshJob();
   }, { timezone: "UTC" });
 
   // Daily at 05:00 UTC: soft-deleted borrower and loan record purge
@@ -234,6 +242,10 @@ export function stopScheduler() {
   if (fourEyesApprovalExpiryTask) {
     fourEyesApprovalExpiryTask.stop();
     fourEyesApprovalExpiryTask = null;
+  }
+  if (queueMetricsRefreshTask) {
+    queueMetricsRefreshTask.stop();
+    queueMetricsRefreshTask = null;
   }
   stopAnalyticsRefreshScheduler();
   console.log("[Scheduler] Stopped.");
